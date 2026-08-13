@@ -182,7 +182,7 @@ func (c *Client) doPostOnce(ctx context.Context, module string, params url.Value
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
