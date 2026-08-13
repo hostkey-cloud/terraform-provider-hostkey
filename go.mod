@@ -1,4 +1,4 @@
-module github.com/hkadm/terraform-provider-hostkey
+module github.com/hostkey-cloud/terraform-provider-hostkey
 
 go 1.26.4
 

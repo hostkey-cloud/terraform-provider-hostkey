@@ -5,7 +5,7 @@
 
 provider_installation {
   dev_overrides {
-    "registry.terraform.io/hkadm/hostkey" = "/path/to/go/bin"
+    "registry.terraform.io/hostkey-cloud/hostkey" = "/path/to/go/bin"
   }
 
   direct {}

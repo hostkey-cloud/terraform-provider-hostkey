@@ -1,11 +1,11 @@
 # Release
 
-How to publish `hkadm/hostkey` to the [Terraform Registry](https://registry.terraform.io/).
+How to publish `hostkey-cloud/hostkey` to the [Terraform Registry](https://registry.terraform.io/).
 
 ## Prerequisites
 
-1. Public GitHub repository: `github.com/hkadm/terraform-provider-hostkey`
-2. Registry namespace ownership for **`hkadm`**
+1. Public GitHub repository: `github.com/hostkey-cloud/terraform-provider-hostkey`
+2. Registry namespace ownership for **`hostkey-cloud`**
 3. GPG key for checksum signing
 4. GitHub Actions secrets: `GPG_PRIVATE_KEY`, `PASSPHRASE`
 
@@ -37,7 +37,7 @@ Users then:
 terraform {
   required_providers {
     hostkey = {
-      source  = "hkadm/hostkey"
+      source  = "hostkey-cloud/hostkey"
       version = "~> 0.1"
     }
   }

@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     hostkey = {
-      source  = "hkadm/hostkey"
+      source  = "hostkey-cloud/hostkey"
       version = "~> 0.1"
     }
   }

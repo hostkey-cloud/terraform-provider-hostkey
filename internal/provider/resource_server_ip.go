@@ -14,7 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/hkadm/terraform-provider-hostkey/internal/invapi"
+	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
 )
 
 var (

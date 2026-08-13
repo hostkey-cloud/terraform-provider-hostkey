@@ -8,7 +8,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/hkadm/terraform-provider-hostkey/internal/invapi"
+	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
 )
 
 // Smoke-test InvAPI without Terraform.
