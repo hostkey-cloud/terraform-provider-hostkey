@@ -7,11 +7,15 @@ description: |-
 
 # hostkey_server (Resource)
 
-Orders a server with `eq/order_instance`, waits for deploy, manages hostname, tags, power, reboot and reinstall. Destroy calls `whmcs/request_cancellation`.
+Orders a **VPS or dedicated** server with `eq/order_instance`, waits for deploy, manages hostname, tags, power, reboot and reinstall. Destroy calls `whmcs/request_cancellation`.
+
+There is no separate “dedic” resource: use any preset from `presets/list` (for example `vm.pico` or `v2-promo`) and a traffic plan compatible with that preset.
 
 Changing OS / software / `root_pass` / `ssh_key` (or `reinstall_trigger`) **reinstalls the same server id** — disk is wiped. Changes to preset, location, traffic plan or billing period force **replace** (new order).
 
 ## Example Usage
+
+### VPS
 
 ```hcl
 resource "hostkey_server" "web" {
@@ -36,6 +40,35 @@ resource "hostkey_server" "web" {
 }
 ```
 
+### Dedicated
+
+Dedicated presets use **different** traffic plan names than VMs. Typical dedic plans (confirm via `data.hostkey_traffic_plans`):
+
+- `1Gbps 50TB - FREE`
+- `1Gbps unmetered (10000 P)`
+
+```hcl
+resource "hostkey_server" "dedic" {
+  preset_name       = "v2-promo"
+  location_name     = "NL"
+  os_name           = "Ubuntu 22.04"
+  traffic_plan_name = "1Gbps 50TB - FREE"
+  # traffic_plan_name = "1Gbps unmetered (10000 P)"
+  deploy_period     = "monthly"
+  root_pass         = var.root_pass
+  power_state       = "on"
+  cancellation_type = 1
+
+  timeouts {
+    create = "90m"
+    update = "90m"
+    delete = "30m"
+  }
+}
+```
+
+List plans for a location (and optionally for a preset id) with [`hostkey_traffic_plans`](../data-sources/traffic_plans.md). Names must match the catalog exactly (case-insensitive).
+
 ## Argument Reference
 
 ### Required
@@ -45,10 +78,10 @@ resource "hostkey_server" "web" {
 
 ### Optional
 
-- `preset_name` / `preset_id` — catalog preset (name preferred). Change forces replace.
+- `preset_name` / `preset_id` — catalog preset (name preferred): VPS (`vm.*`) or dedicated (e.g. `v2-promo`). Change forces replace.
 - `os_name` / `os_id` — OS. Change triggers reinstall.
 - `soft_name` / `soft_id` — marketplace software. Change triggers reinstall.
-- `traffic_plan_name` / `traffic_plan_id` — traffic plan. Change forces replace.
+- `traffic_plan_name` / `traffic_plan_id` — traffic plan for that preset (VM vs dedic names differ). Change forces replace.
 - `hostname` — server hostname (rename via InvAPI).
 - `ssh_key` — public key for deploy/reinstall. Change triggers reinstall.
 - `post_install_script`, `own_os`, `root_size`, `os_template` — install options; changes trigger reinstall.
@@ -85,3 +118,4 @@ Import by InvAPI server id. Align HCL with the live server so the next plan is e
 - `root_pass` is stored in Terraform state (sensitive).
 - After a successful create, a second `apply` should be a no-op if config matches remote.
 - Pending create only resumes the resource’s own `pending:<invoice>` — foreign Pending Instant servers are never adopted.
+- Do not use a VM traffic plan (e.g. `3 TB / 1 Gbps VM`) with a dedicated preset — resolve names from the catalog for that location/preset first.

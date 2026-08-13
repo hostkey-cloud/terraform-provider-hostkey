@@ -63,9 +63,22 @@ resource "hostkey_server" "web" {
   deploy_period     = "monthly"
   root_pass         = var.root_pass
 }
+
+# Dedicated — другой preset и тариф трафика (не VM):
+# resource "hostkey_server" "dedic" {
+#   preset_name       = "v2-promo"
+#   location_name     = "NL"
+#   os_name           = "Ubuntu 22.04"
+#   traffic_plan_name = "1Gbps 50TB - FREE"
+#   # traffic_plan_name = "1Gbps unmetered (10000 P)"
+#   deploy_period     = "monthly"
+#   root_pass         = var.root_pass
+# }
 ```
 
-> Пока провайдер не опубликован в Registry, для разработки используйте `go install` и [dev_overrides](examples/dev-terraform.rc) — см. [CONTRIBUTING.md](CONTRIBUTING.md).
+Тарифы трафика у VPS и dedicated **разные**. Сверяйте имена через `data.hostkey_traffic_plans` / `data.hostkey_presets`. Подробнее: [docs/resources/server.md](docs/resources/server.md).
+
+Для локальной разработки без Registry: `go install` и [dev_overrides](examples/dev-terraform.rc) — см. [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### 3. API-ключ
 

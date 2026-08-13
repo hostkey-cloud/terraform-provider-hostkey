@@ -63,9 +63,22 @@ resource "hostkey_server" "web" {
   deploy_period     = "monthly"
   root_pass         = var.root_pass
 }
+
+# Dedicated — different preset and traffic plan (not VM):
+# resource "hostkey_server" "dedic" {
+#   preset_name       = "v2-promo"
+#   location_name     = "NL"
+#   os_name           = "Ubuntu 22.04"
+#   traffic_plan_name = "1Gbps 50TB - FREE"
+#   # traffic_plan_name = "1Gbps unmetered (10000 P)"
+#   deploy_period     = "monthly"
+#   root_pass         = var.root_pass
+# }
 ```
 
-> Until the provider is on the Registry, use `go install` and [dev_overrides](examples/dev-terraform.rc) — see [CONTRIBUTING.md](CONTRIBUTING.md).
+VPS and dedicated use **different** traffic plan names. Confirm via `data.hostkey_traffic_plans` / `data.hostkey_presets`. See [docs/resources/server.md](docs/resources/server.md).
+
+For local development without the Registry: `go install` and [dev_overrides](examples/dev-terraform.rc) — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### 3. API key
 

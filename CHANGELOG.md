@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Docs: dedicated examples (`v2-promo`) and dedic traffic plans (`1Gbps 50TB - FREE`, `1Gbps unmetered (10000 P)`) in README and `docs/resources/server.md`
 - Documentation reorganized for public release (README RU/EN, Registry `docs/`, consolidated contributor docs)
 
 ## [0.1.0] - TBD
