@@ -1,0 +1,14 @@
+# golangci-lint configuration for terraform-provider-hostkey
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+issues:
+  exclude-use-default: false

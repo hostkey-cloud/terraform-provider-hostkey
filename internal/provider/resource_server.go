@@ -1,0 +1,958 @@
+package provider
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+
+	"github.com/hkadm/terraform-provider-hostkey/internal/invapi"
+)
+
+var (
+	_ resource.Resource                = &serverResource{}
+	_ resource.ResourceWithImportState = &serverResource{}
+	_ resource.ResourceWithModifyPlan  = &serverResource{}
+)
+
+const (
+	defaultCreateTimeout = 90 * time.Minute
+	defaultDeleteTimeout = 30 * time.Minute
+	pollInterval         = 15 * time.Second
+)
+
+type serverResource struct {
+	client *invapi.Client
+}
+
+type serverModel struct {
+	ID                 types.String   `tfsdk:"id"`
+	PresetID           types.Int64    `tfsdk:"preset_id"`
+	PresetName         types.String   `tfsdk:"preset_name"`
+	LocationName       types.String   `tfsdk:"location_name"`
+	OSID               types.Int64    `tfsdk:"os_id"`
+	OSName             types.String   `tfsdk:"os_name"`
+	SoftID             types.Int64    `tfsdk:"soft_id"`
+	SoftName           types.String   `tfsdk:"soft_name"`
+	TrafficPlanID      types.Int64    `tfsdk:"traffic_plan_id"`
+	TrafficPlanName    types.String   `tfsdk:"traffic_plan_name"`
+	Hostname           types.String   `tfsdk:"hostname"`
+	RootPass           types.String   `tfsdk:"root_pass"`
+	SSHKey             types.String   `tfsdk:"ssh_key"`
+	PostInstallScript  types.String   `tfsdk:"post_install_script"`
+	DeployPeriod       types.String   `tfsdk:"deploy_period"`
+	DeployNotify       types.Bool     `tfsdk:"deploy_notify"`
+	OwnOS              types.Bool     `tfsdk:"own_os"`
+	RootSize           types.Int64    `tfsdk:"root_size"`
+	IPv4Amount         types.Int64    `tfsdk:"ipv4_amount"`
+	VLAN               types.Int64    `tfsdk:"vlan"`
+	PrivateVLAN        types.Int64    `tfsdk:"private_vlan"`
+	CustomDomain       types.String   `tfsdk:"custom_domain"`
+	OSTemplate         types.String   `tfsdk:"os_template"`
+	DeployOptions      types.String   `tfsdk:"deploy_options"`
+	ExtraOrderParams   types.Map      `tfsdk:"extra_order_params"`
+	Tags               types.Map      `tfsdk:"tags"`
+	PollIntervalSecs   types.Int64    `tfsdk:"poll_interval_seconds"`
+	MainIPv4           types.String   `tfsdk:"main_ipv4"`
+	Status             types.String   `tfsdk:"status"`
+	Invoice            types.Int64    `tfsdk:"invoice"`
+	CancellationReason types.String   `tfsdk:"cancellation_reason"`
+	CancellationType   types.Int64    `tfsdk:"cancellation_type"`
+	PowerState         types.String   `tfsdk:"power_state"`
+	PowerOffHard       types.Bool     `tfsdk:"power_off_hard"`
+	RebootTrigger      types.String   `tfsdk:"reboot_trigger"`
+	ReinstallTrigger   types.String   `tfsdk:"reinstall_trigger"`
+	Timeouts           timeouts.Value `tfsdk:"timeouts"`
+}
+
+func NewServerResource() resource.Resource {
+	return &serverResource{}
+}
+
+func (r *serverResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_server"
+}
+
+func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "Manages a Hostkey server ordered via InvAPI eq/order_instance. " +
+			"Changing OS/software/root_pass/ssh_key (and related install fields) reinstalls the same server id — data is wiped. " +
+			"Preset/location/traffic/billing changes still force replace (new order).",
+		Blocks: map[string]schema.Block{
+			"timeouts": timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Update: true,
+				Delete: true,
+			}),
+		},
+		Attributes: map[string]schema.Attribute{
+			"id": schema.StringAttribute{
+				Description: "InvAPI server ID, or pending:<invoice> while deploy is in progress.",
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"preset_id": schema.Int64Attribute{
+				Description: "Preset ID. Optional when preset_name is set.",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+					requiresReplaceOnIDChange(),
+				},
+			},
+			"preset_name": schema.StringAttribute{
+				Description: "Preset name from the catalog (e.g. vm.pico). Looks up preset_id if not set.",
+				Optional:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"location_name": schema.StringAttribute{
+				Description: "DC location code: NL, US, FI, DE, RU, etc. (not the same as provider region COM/RU).",
+				Required:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"os_id": schema.Int64Attribute{
+				Description: "OS ID. Optional when os_name is set. Changing OS on an existing server triggers reinstall (same id).",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
+			},
+			"os_name": schema.StringAttribute{
+				Description: "OS name from the catalog (e.g. Ubuntu 22.04). Change triggers reinstall on an existing server.",
+				Optional:    true,
+			},
+			"soft_id": schema.Int64Attribute{
+				Description: "Marketplace software ID. Optional when soft_name is set. Change triggers reinstall.",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
+			},
+			"soft_name": schema.StringAttribute{
+				Description: "Marketplace software name. Looks up soft_id if not set. Change triggers reinstall.",
+				Optional:    true,
+			},
+			"traffic_plan_id": schema.Int64Attribute{
+				Description: "Traffic plan ID. Optional when traffic_plan_name is set.",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+					requiresReplaceOnIDChange(),
+				},
+			},
+			"traffic_plan_name": schema.StringAttribute{
+				Description: "Traffic plan name from the catalog (e.g. 3 TB / 1 Gbps VM). Looks up traffic_plan_id if not set.",
+				Optional:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"hostname": schema.StringAttribute{
+				Description: "Server hostname.",
+				Optional:    true,
+			},
+			"root_pass": schema.StringAttribute{
+				Description: "Root password (8-30 chars: upper, lower, digit, and one of % - _ +; no @/#). Change triggers reinstall.",
+				Required:    true,
+				Sensitive:   true,
+				Validators: []validator.String{
+					rootPassRules(),
+				},
+			},
+			"ssh_key": schema.StringAttribute{
+				Description: "Public SSH key injected during deploy/reinstall. Change triggers reinstall.",
+				Optional:    true,
+			},
+			"post_install_script": schema.StringAttribute{
+				Description: "Post-install shell script. Change triggers reinstall.",
+				Optional:    true,
+			},
+			"deploy_period": schema.StringAttribute{
+				Description: "Billing period: hourly, monthly, quarterly, semi-annually, annually. Omit to use InvAPI default.",
+				Optional:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					oneOfStrings("deploy_period", "hourly", "monthly", "quarterly", "semi-annually", "annually"),
+				},
+			},
+			"deploy_notify": schema.BoolAttribute{
+				Description: "Send email when deployment completes. Omit to use InvAPI default.",
+				Optional:    true,
+			},
+			"own_os": schema.BoolAttribute{
+				Description: "Skip OS installation during deploy/reinstall. Change triggers reinstall.",
+				Optional:    true,
+			},
+			"root_size": schema.Int64Attribute{
+				Description: "Root partition size in GB. Change triggers reinstall.",
+				Optional:    true,
+			},
+			"ipv4_amount": schema.Int64Attribute{
+				Description: "Number of IPv4 addresses to order.",
+				Optional:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.RequiresReplace(),
+				},
+			},
+			"vlan": schema.Int64Attribute{
+				Description: "Private VLAN ID (InvAPI vlan).",
+				Optional:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.RequiresReplace(),
+				},
+			},
+			"private_vlan": schema.Int64Attribute{
+				Description: "Private VLAN ID (InvAPI private_vlan).",
+				Optional:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.RequiresReplace(),
+				},
+			},
+			"custom_domain": schema.StringAttribute{
+				Description: "Custom domain for the server.",
+				Optional:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"os_template": schema.StringAttribute{
+				Description: "OS template for deploy-from-template (admin/advanced). Change triggers reinstall.",
+				Optional:    true,
+			},
+			"deploy_options": schema.StringAttribute{
+				Description: "InvAPI deploy_options string (billing/location options when required).",
+				Optional:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"extra_order_params": schema.MapAttribute{
+				Description: "Extra eq/order_instance form fields not covered by other attributes.",
+				ElementType: types.StringType,
+				Optional:    true,
+				PlanModifiers: []planmodifier.Map{
+					mapplanmodifier.RequiresReplace(),
+				},
+			},
+			"tags": schema.MapAttribute{
+				Description: "User tags on the server (tag name → value). Synced via tags/add and tags/remove after the server exists.",
+				ElementType: types.StringType,
+				Optional:    true,
+			},
+			"poll_interval_seconds": schema.Int64Attribute{
+				Description: "How often to poll deploy status (default 15).",
+				Optional:    true,
+			},
+			"main_ipv4": schema.StringAttribute{
+				Description: "Primary IPv4 address after deploy.",
+				Computed:    true,
+			},
+			"status": schema.StringAttribute{
+				Description: "Last known server status from InvAPI.",
+				Computed:    true,
+			},
+			"invoice": schema.Int64Attribute{
+				Description: "WHMCS invoice id from order_instance (set after Paid).",
+				Computed:    true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
+			},
+			"cancellation_reason": schema.StringAttribute{
+				Description: "Reason passed to whmcs/request_cancellation on destroy.",
+				Optional:    true,
+			},
+			"cancellation_type": schema.Int64Attribute{
+				Description: "Cancellation type on destroy: 0 = end of billing period, 1 = immediate with refund (when allowed). Omit for InvAPI/panel default.",
+				Optional:    true,
+				Validators: []validator.Int64{
+					oneOfInt64("cancellation_type", 0, 1),
+				},
+			},
+			"power_state": schema.StringAttribute{
+				Description: `Desired power state: "on" or "off". Maps to eq/on and eq/off (or eq/hard_off when power_off_hard=true). Omit to leave power unmanaged by Terraform.`,
+				Optional:    true,
+				Computed:    true,
+				Validators: []validator.String{
+					oneOfStrings("power_state", "on", "off"),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"power_off_hard": schema.BoolAttribute{
+				Description: "When power_state is set to off, call eq/hard_off instead of eq/off.",
+				Optional:    true,
+			},
+			"reboot_trigger": schema.StringAttribute{
+				Description: "One-shot reboot (eq/reboot): change this string (e.g. timestamp) to reboot on apply. Not a desired-state — value is kept after reboot.",
+				Optional:    true,
+			},
+			"reinstall_trigger": schema.StringAttribute{
+				Description: "Force reinstall with the same OS/software: change this string to wipe and reinstall via eq/order_instance (id=server). Data is destroyed.",
+				Optional:    true,
+			},
+		},
+	}
+}
+
+func (r *serverResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+	client, ok := req.ProviderData.(*invapi.Client)
+	if !ok {
+		resp.Diagnostics.AddError(
+			"Unexpected provider data",
+			fmt.Sprintf("Expected *invapi.Client, got %T", req.ProviderData),
+		)
+		return
+	}
+	r.client = client
+}
+
+func (r *serverResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var plan serverModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	var state serverModel
+	if !req.State.Raw.IsNull() {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	}
+	if err := r.resolveOrderIDs(ctx, &plan); err != nil {
+		resp.Diagnostics.AddWarning("Catalog name resolve", err.Error())
+	}
+	// Keep optional computed ids null/known instead of unknown when names were not requested.
+	stabilizeOptionalID(&plan.SoftID, plan.SoftName, state.SoftID)
+	stabilizeOptionalID(&plan.TrafficPlanID, plan.TrafficPlanName, state.TrafficPlanID)
+	stabilizeOptionalID(&plan.OSID, plan.OSName, state.OSID)
+	stabilizeOptionalID(&plan.PresetID, plan.PresetName, state.PresetID)
+
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+}
+
+func stabilizeOptionalID(id *types.Int64, name types.String, stateID types.Int64) {
+	if id == nil {
+		return
+	}
+	if !id.IsUnknown() {
+		return
+	}
+	if !name.IsNull() && name.ValueString() != "" {
+		return // still resolving / will be set
+	}
+	if !stateID.IsNull() && !stateID.IsUnknown() {
+		*id = stateID
+		return
+	}
+	*id = types.Int64Null()
+}
+
+func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan serverModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if err := r.resolveOrderIDs(ctx, &plan); err != nil {
+		resp.Diagnostics.AddError("Catalog name resolve failed", err.Error())
+		return
+	}
+
+	if plan.PresetID.IsNull() && (plan.PresetName.IsNull() || plan.PresetName.ValueString() == "") {
+		resp.Diagnostics.AddError("Missing preset", "Set preset_id or preset_name when creating a new server.")
+		return
+	}
+	ownOS := !plan.OwnOS.IsNull() && plan.OwnOS.ValueBool()
+	if plan.OSID.IsNull() && !ownOS && (plan.OSTemplate.IsNull() || plan.OSTemplate.ValueString() == "") {
+		resp.Diagnostics.AddError("Missing OS", "Set os_id or os_name (unless own_os=true or os_template is set).")
+		return
+	}
+
+	createTimeout, diags := plan.Timeouts.Create(ctx, defaultCreateTimeout)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, createTimeout)
+	defer cancel()
+
+	interval := pollIntervalFrom(plan)
+
+	orderReq := buildOrderRequest(plan)
+
+	beforeList, _ := r.client.EQList(ctx, nil)
+	known := listKnownIDs(beforeList)
+
+	tflog.Info(ctx, "Ordering Hostkey server", map[string]any{
+		"preset_id": orderReq.Preset,
+		"location":  orderReq.LocationName,
+	})
+
+	orderResp, err := r.client.EQOrderInstance(ctx, orderReq)
+	if err != nil {
+		resp.Diagnostics.AddError("Order failed", err.Error())
+		return
+	}
+
+	tflog.Info(ctx, "order_instance response", map[string]any{
+		"id":       orderResp.ID,
+		"callback": orderResp.Callback,
+		"invoice":  orderResp.Invoice,
+		"status":   orderResp.Status,
+		"raw":      orderResp.RawBody,
+	})
+
+	// CRITICAL: persist partial state immediately after Paid so interrupted apply
+	// does not re-enter Create without tracking (and re-order).
+	if orderResp.Invoice > 0 {
+		pending := plan
+		pending.ID = types.StringValue(pendingID(orderResp.Invoice))
+		pending.Invoice = types.Int64Value(int64(orderResp.Invoice))
+		pending.Status = types.StringValue(orderResp.Status)
+		if pending.Status.ValueString() == "" {
+			pending.Status = types.StringValue("Pending")
+		}
+		pending.MainIPv4 = types.StringValue("")
+		resp.Diagnostics.Append(resp.State.Set(ctx, &pending)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if err := setPrivateKnownIDs(ctx, resp.Private, known); err != nil {
+			resp.Diagnostics.AddWarning("private state", err.Error())
+		}
+	}
+
+	serverID := orderResp.ID
+	if serverID == 0 && orderResp.Callback != "" {
+		waitResp, waitErr := r.client.WaitForCallback(ctx, orderResp.Callback, invapi.WaitOptions{
+			PollInterval: interval,
+			Timeout:      createTimeout,
+		})
+		if waitErr != nil {
+			resp.Diagnostics.AddWarning("Deploy wait interrupted", waitErr.Error()+"; state saved as pending — re-apply will resume, not re-order.")
+			return
+		}
+		if len(waitResp.Context) > 0 {
+			var cb invapi.CallbackContext
+			if err := json.Unmarshal(waitResp.Context, &cb); err == nil && cb.ID != "" {
+				if parsed, parseErr := strconv.Atoi(cb.ID); parseErr == nil {
+					serverID = parsed
+				}
+			}
+		}
+	}
+
+	if serverID == 0 {
+		found, waitErr := r.client.WaitForNewServerID(ctx, known, invapi.WaitOptions{
+			PollInterval: interval,
+			Timeout:      createTimeout,
+		})
+		if waitErr != nil {
+			resp.Diagnostics.AddWarning(
+				"Deploy still in progress",
+				fmt.Sprintf("%v; order_response=%s. State kept as pending:<invoice> — re-run apply to finish (will not place a new order).", waitErr, orderResp.RawBody),
+			)
+			return
+		}
+		serverID = found
+	}
+
+	state, d := r.readServerState(ctx, serverID, plan)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if orderResp.Invoice > 0 {
+		state.Invoice = types.Int64Value(int64(orderResp.Invoice))
+	}
+	if err := r.syncTags(ctx, serverID, plan.Tags, types.MapNull(types.StringType)); err != nil {
+		resp.Diagnostics.AddWarning("Tags", err.Error())
+	} else if live, err := r.readUserTags(ctx, serverID); err == nil {
+		state.Tags = filterConfiguredTags(plan.Tags, live)
+	}
+	if err := r.applyPowerState(ctx, serverID, plan, state); err != nil {
+		resp.Diagnostics.AddWarning("Power state", err.Error())
+	} else if powerStateConfigured(plan) {
+		refreshed, rd := r.readServerState(ctx, serverID, plan)
+		resp.Diagnostics.Append(rd...)
+		if !resp.Diagnostics.HasError() {
+			state.PowerState = refreshed.PowerState
+			state.Status = refreshed.Status
+		}
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+func (r *serverResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state serverModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	id := state.ID.ValueString()
+	if strings.HasPrefix(id, pendingIDPrefix) {
+		known, _ := getPrivateKnownIDs(ctx, req.Private)
+		resolved, err := r.resolvePendingServer(ctx, known)
+		if err != nil {
+			tflog.Info(ctx, "pending server not ready yet", map[string]any{"id": id, "err": err.Error()})
+			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+			return
+		}
+		newState, d := r.readServerState(ctx, resolved, state)
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if !state.Invoice.IsNull() {
+			newState.Invoice = state.Invoice
+		}
+		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
+		return
+	}
+
+	serverID, err := strconv.Atoi(id)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid server id", err.Error())
+		return
+	}
+
+	newState, d := r.readServerState(ctx, serverID, state)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !state.Invoice.IsNull() {
+		newState.Invoice = state.Invoice
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
+}
+
+// resolvePendingServer finds InvAPI server id for this resource's own pending:* state.
+// It only accepts server IDs that were not in the pre-order snapshot (private known_server_ids).
+// It does not adopt unrelated Pending Instant orders from the account.
+func (r *serverResource) resolvePendingServer(ctx context.Context, knownBefore map[int]struct{}) (int, error) {
+	upd, err := r.client.EQUpdateServers(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	for _, key := range upd.DeployKeysMap() {
+		if key == "" {
+			continue
+		}
+		check, cbErr := r.client.CallbackCheck(ctx, key)
+		if cbErr != nil {
+			continue
+		}
+		if done, termErr := callbackDoneOK(check); done && termErr == nil && len(check.Context) > 0 {
+			var cb invapi.CallbackContext
+			if json.Unmarshal(check.Context, &cb) == nil && cb.ID != "" {
+				if id, err := strconv.Atoi(cb.ID); err == nil {
+					if _, existed := knownBefore[id]; !existed {
+						return id, nil
+					}
+				}
+			}
+		}
+	}
+
+	list, err := r.client.EQList(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	ids, err := list.IDs()
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		if _, existed := knownBefore[id]; !existed {
+			return id, nil
+		}
+	}
+	return 0, fmt.Errorf("pending deploy not finished yet (known=%v current=%v)", keysInt(knownBefore), ids)
+}
+
+func keysInt(m map[int]struct{}) []int {
+	out := make([]int, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func callbackDoneOK(check *invapi.CallbackCheckResponse) (bool, error) {
+	if check == nil {
+		return false, nil
+	}
+	scope := strings.ToLower(string(check.Scope))
+	if strings.Contains(scope, "deploy_done") || strings.Contains(scope, "autodeploy completed") {
+		return true, nil
+	}
+	if len(check.Context) > 0 {
+		var cb invapi.CallbackContext
+		if json.Unmarshal(check.Context, &cb) == nil && cb.IP != "" && cb.ID != "" {
+			return true, nil
+		}
+		if strings.Contains(strings.ToLower(string(check.Context)), "error") {
+			return true, fmt.Errorf("deploy failed: %s", string(check.Context))
+		}
+	}
+	if strings.EqualFold(check.Result, "Error") {
+		return true, fmt.Errorf("callback error")
+	}
+	return false, nil
+}
+
+func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state serverModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Pending → try resolve then continue as update
+	if strings.HasPrefix(state.ID.ValueString(), pendingIDPrefix) {
+		known, _ := getPrivateKnownIDs(ctx, req.Private)
+		resolved, err := r.resolvePendingServer(ctx, known)
+		if err != nil {
+			resp.Diagnostics.AddWarning("Still pending", err.Error())
+			plan.ID = state.ID
+			plan.Invoice = state.Invoice
+			plan.Status = state.Status
+			plan.MainIPv4 = state.MainIPv4
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			return
+		}
+		state.ID = types.StringValue(strconv.Itoa(resolved))
+	}
+
+	serverID, err := strconv.Atoi(state.ID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid server id", err.Error())
+		return
+	}
+
+	if needsReinstall(plan, state) {
+		updateTimeout, diags := plan.Timeouts.Update(ctx, defaultUpdateTimeout)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		reCtx, cancel := context.WithTimeout(ctx, updateTimeout)
+		defer cancel()
+		if err := r.applyReinstall(reCtx, serverID, plan); err != nil {
+			resp.Diagnostics.AddError("Reinstall failed", err.Error())
+			return
+		}
+	}
+
+	if !plan.Hostname.IsNull() && plan.Hostname.ValueString() != state.Hostname.ValueString() {
+		if err := r.client.EQRenameServer(ctx, serverID, plan.Hostname.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Rename failed", err.Error())
+			return
+		}
+	}
+
+	if err := r.syncTags(ctx, serverID, plan.Tags, state.Tags); err != nil {
+		resp.Diagnostics.AddError("Tags sync failed", err.Error())
+		return
+	}
+
+	if err := r.applyPowerState(ctx, serverID, plan, state); err != nil {
+		resp.Diagnostics.AddError("Power state change failed", err.Error())
+		return
+	}
+
+	if !plan.RebootTrigger.IsNull() &&
+		plan.RebootTrigger.ValueString() != "" &&
+		plan.RebootTrigger.ValueString() != state.RebootTrigger.ValueString() {
+		if err := r.client.EQReboot(ctx, serverID); err != nil {
+			resp.Diagnostics.AddError("Reboot failed", err.Error())
+			return
+		}
+		tflog.Info(ctx, "eq/reboot requested", map[string]any{
+			"server_id":      serverID,
+			"reboot_trigger": plan.RebootTrigger.ValueString(),
+		})
+	}
+
+	newState, d := r.readServerState(ctx, serverID, plan)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !state.Invoice.IsNull() {
+		newState.Invoice = state.Invoice
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
+}
+
+func (r *serverResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state serverModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if strings.HasPrefix(state.ID.ValueString(), pendingIDPrefix) {
+		known, _ := getPrivateKnownIDs(ctx, req.Private)
+		resolved, err := r.resolvePendingServer(ctx, known)
+		if err != nil {
+			resp.Diagnostics.AddWarning(
+				"Pending server not linked yet",
+				"Removed from Terraform state only. Cancel the Pending service in InvAPI/billing panel if needed.",
+			)
+			return
+		}
+		state.ID = types.StringValue(strconv.Itoa(resolved))
+	}
+
+	serverID, err := strconv.Atoi(state.ID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid server id", err.Error())
+		return
+	}
+
+	deleteTimeout, diags := state.Timeouts.Delete(ctx, defaultDeleteTimeout)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, deleteTimeout)
+	defer cancel()
+
+	reason := "Cancelled via Terraform"
+	if !state.CancellationReason.IsNull() {
+		reason = state.CancellationReason.ValueString()
+	}
+
+	var cancelType *int
+	if !state.CancellationType.IsNull() {
+		v := int(state.CancellationType.ValueInt64())
+		cancelType = &v
+	}
+
+	tflog.Info(ctx, "Requesting Hostkey service cancellation", map[string]any{
+		"server_id":         serverID,
+		"cancellation_type": cancelType,
+	})
+
+	if err := r.client.WHMCSRequestCancellation(ctx, serverID, reason, cancelType); err != nil {
+		resp.Diagnostics.AddError("Cancellation failed", err.Error())
+		return
+	}
+
+	// Cancellation is accepted asynchronously; wait until status leaves "rent" when possible.
+	deadline := time.Now().Add(deleteTimeout)
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for time.Now().Before(deadline) {
+		show, err := r.client.EQShow(ctx, serverID)
+		if err != nil {
+			return // gone or inaccessible — fine
+		}
+		st := serverStatus(show)
+		if st != "" && !strings.EqualFold(st, "rent") {
+			tflog.Info(ctx, "Server left rent status after cancel", map[string]any{"status": st})
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+	resp.Diagnostics.AddWarning(
+		"Cancellation submitted",
+		"InvAPI accepted request_cancellation, but the server still reports status=rent within the delete timeout. Check the panel; Terraform will still remove it from state.",
+	)
+}
+
+func (r *serverResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+func (r *serverResource) readServerState(ctx context.Context, serverID int, template serverModel) (serverModel, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	show, err := r.client.EQShow(ctx, serverID)
+	if err != nil {
+		diags.AddError("Read server failed", err.Error())
+		return template, diags
+	}
+
+	state := template
+	state.ID = types.StringValue(strconv.Itoa(serverID))
+	state.MainIPv4 = types.StringValue(invapi.MainIPv4(show))
+	if st := serverStatus(show); st != "" {
+		state.Status = types.StringValue(st)
+	} else {
+		state.Status = types.StringValue(show.Result)
+	}
+	if ps := invapi.PowerStateFromStatus(state.Status.ValueString()); ps != "" {
+		if powerStateConfigured(template) {
+			state.PowerState = types.StringValue(ps)
+		} else if template.PowerState.IsNull() || template.PowerState.IsUnknown() {
+			// Unmanaged: do not invent a value that would create perpetual drift.
+			state.PowerState = types.StringNull()
+		} else {
+			state.PowerState = types.StringValue(ps)
+		}
+	} else if !powerStateConfigured(template) && (template.PowerState.IsNull() || template.PowerState.IsUnknown()) {
+		state.PowerState = types.StringNull()
+	}
+	if tags, err := r.readUserTags(ctx, serverID); err == nil {
+		if !template.Tags.IsNull() {
+			state.Tags = filterConfiguredTags(template.Tags, tags)
+		}
+	}
+
+	return state, diags
+}
+
+func powerStateConfigured(m serverModel) bool {
+	if m.PowerState.IsNull() || m.PowerState.IsUnknown() {
+		return false
+	}
+	s := strings.ToLower(strings.TrimSpace(m.PowerState.ValueString()))
+	return s == "on" || s == "off"
+}
+
+func (r *serverResource) applyPowerState(ctx context.Context, serverID int, plan, state serverModel) error {
+	if !powerStateConfigured(plan) {
+		return nil
+	}
+	want := strings.ToLower(strings.TrimSpace(plan.PowerState.ValueString()))
+	have := ""
+	if powerStateConfigured(state) {
+		have = strings.ToLower(strings.TrimSpace(state.PowerState.ValueString()))
+	} else if !state.Status.IsNull() {
+		have = invapi.PowerStateFromStatus(state.Status.ValueString())
+	}
+	if have == want {
+		return nil
+	}
+	switch want {
+	case "on":
+		return r.client.EQPowerOn(ctx, serverID)
+	case "off":
+		if !plan.PowerOffHard.IsNull() && plan.PowerOffHard.ValueBool() {
+			return r.client.EQHardOff(ctx, serverID)
+		}
+		return r.client.EQPowerOff(ctx, serverID)
+	default:
+		return fmt.Errorf("unsupported power_state %q", plan.PowerState.ValueString())
+	}
+}
+
+func buildOrderRequest(plan serverModel) invapi.OrderInstanceRequest {
+	orderReq := invapi.OrderInstanceRequest{
+		LocationName: plan.LocationName.ValueString(),
+		RootPass:     plan.RootPass.ValueString(),
+		OwnOS:        !plan.OwnOS.IsNull() && plan.OwnOS.ValueBool(),
+	}
+	if !plan.PresetName.IsNull() && plan.PresetName.ValueString() != "" {
+		orderReq.Preset = plan.PresetName.ValueString()
+	} else if !plan.PresetID.IsNull() {
+		orderReq.Preset = strconv.FormatInt(plan.PresetID.ValueInt64(), 10)
+	}
+	if !plan.OSID.IsNull() {
+		orderReq.OSID = int(plan.OSID.ValueInt64())
+	}
+	if !plan.DeployNotify.IsNull() {
+		v := plan.DeployNotify.ValueBool()
+		orderReq.DeployNotify = &v
+	}
+	if !plan.SoftID.IsNull() {
+		orderReq.SoftID = int(plan.SoftID.ValueInt64())
+	}
+	if !plan.TrafficPlanID.IsNull() {
+		orderReq.TrafficPlan = int(plan.TrafficPlanID.ValueInt64())
+	}
+	if !plan.Hostname.IsNull() {
+		orderReq.Hostname = plan.Hostname.ValueString()
+	}
+	if !plan.SSHKey.IsNull() {
+		orderReq.SSHKey = plan.SSHKey.ValueString()
+	}
+	if !plan.PostInstallScript.IsNull() {
+		orderReq.PostInstallScript = plan.PostInstallScript.ValueString()
+	}
+	if !plan.DeployPeriod.IsNull() && plan.DeployPeriod.ValueString() != "" {
+		orderReq.DeployPeriod = plan.DeployPeriod.ValueString()
+	}
+	if !plan.RootSize.IsNull() {
+		orderReq.RootSize = int(plan.RootSize.ValueInt64())
+	}
+	if !plan.IPv4Amount.IsNull() {
+		orderReq.IPv4Amount = int(plan.IPv4Amount.ValueInt64())
+	}
+	if !plan.VLAN.IsNull() {
+		orderReq.VLAN = int(plan.VLAN.ValueInt64())
+	}
+	if !plan.PrivateVLAN.IsNull() {
+		orderReq.PrivateVLAN = int(plan.PrivateVLAN.ValueInt64())
+	}
+	if !plan.CustomDomain.IsNull() {
+		orderReq.CustomDomain = plan.CustomDomain.ValueString()
+	}
+	if !plan.OSTemplate.IsNull() {
+		orderReq.OSTemplate = plan.OSTemplate.ValueString()
+	}
+	if !plan.DeployOptions.IsNull() {
+		orderReq.DeployOptions = plan.DeployOptions.ValueString()
+	}
+	if !plan.ExtraOrderParams.IsNull() && !plan.ExtraOrderParams.IsUnknown() {
+		raw := map[string]types.String{}
+		_ = plan.ExtraOrderParams.ElementsAs(context.Background(), &raw, false)
+		if len(raw) > 0 {
+			orderReq.Extra = make(map[string]string, len(raw))
+			for k, v := range raw {
+				orderReq.Extra[k] = v.ValueString()
+			}
+		}
+	}
+	return orderReq
+}
+
+func pollIntervalFrom(plan serverModel) time.Duration {
+	if !plan.PollIntervalSecs.IsNull() && plan.PollIntervalSecs.ValueInt64() > 0 {
+		return time.Duration(plan.PollIntervalSecs.ValueInt64()) * time.Second
+	}
+	return pollInterval
+}

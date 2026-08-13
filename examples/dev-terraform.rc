@@ -1,0 +1,12 @@
+# Copy to terraform.rc (e.g. %APPDATA%\terraform.d\terraform.rc on Windows,
+# or ~/.terraformrc on Unix) for local development with go install.
+#
+# Replace the path with: $(go env GOPATH)/bin  (or $(go env GOBIN) if set)
+
+provider_installation {
+  dev_overrides {
+    "registry.terraform.io/hkadm/hostkey" = "/path/to/go/bin"
+  }
+
+  direct {}
+}

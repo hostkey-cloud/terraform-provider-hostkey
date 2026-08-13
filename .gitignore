@@ -1,0 +1,82 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+terraform-provider-hostkey
+terraform-provider-hostkey.exe
+terraform-provider-hostkey_*
+__debug_bin*
+debug
+
+# Build / release artifacts
+bin/
+dist/
+vendor/
+*.coverprofile
+coverage.out
+coverage.html
+*.prof
+
+# Go workspace (local only)
+go.work
+go.work.sum
+
+# Terraform local / state / secrets
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfvars
+*.tfvars.json
+!examples/**/*.tfvars.example
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Env / credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa
+id_ed25519
+*.p12
+*.pfx
+secrets/
+credentials.json
+
+# Logs / temp
+*.log
+*.tmp
+tmp/
+temp/
+*.bak
+*.orig
+*.swp
+*~
+
+# IDE / OS / local tooling
+.idea/
+.vscode/
+.cursor/
+.direnv/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.user
+
+# Local Terraform CLI override copies (keep the template in examples/)
+terraform.rc
+.terraformrc
