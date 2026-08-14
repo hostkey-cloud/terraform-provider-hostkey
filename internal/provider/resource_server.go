@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -59,6 +60,9 @@ type serverModel struct {
 	DeployNotify       types.Bool     `tfsdk:"deploy_notify"`
 	OwnOS              types.Bool     `tfsdk:"own_os"`
 	RootSize           types.Int64    `tfsdk:"root_size"`
+	DiskMirror         types.String   `tfsdk:"disk_mirror"`
+	NoLVM              types.Bool     `tfsdk:"no_lvm"`
+	IPv6Block          types.Bool     `tfsdk:"ipv6_block"`
 	IPv4Amount         types.Int64    `tfsdk:"ipv4_amount"`
 	VLAN               types.Int64    `tfsdk:"vlan"`
 	PrivateVLAN        types.Int64    `tfsdk:"private_vlan"`
@@ -116,6 +120,9 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 					int64planmodifier.UseStateForUnknown(),
 					requiresReplaceOnIDChange(),
 				},
+				Validators: []validator.Int64{
+					int64AtLeast("preset_id", 1),
+				},
 			},
 			"preset_name": schema.StringAttribute{
 				Description: "Preset name from the catalog (e.g. vm.pico). Looks up preset_id if not set.",
@@ -130,6 +137,9 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
+				Validators: []validator.String{
+					locationCodeValidator(),
+				},
 			},
 			"os_id": schema.Int64Attribute{
 				Description: "OS ID. Optional when os_name is set. Changing OS on an existing server triggers reinstall (same id).",
@@ -137,6 +147,9 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Computed:    true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
+				},
+				Validators: []validator.Int64{
+					int64AtLeast("os_id", 1),
 				},
 			},
 			"os_name": schema.StringAttribute{
@@ -149,6 +162,9 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Computed:    true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
+				},
+				Validators: []validator.Int64{
+					int64AtLeast("soft_id", 1),
 				},
 			},
 			"soft_name": schema.StringAttribute{
@@ -163,6 +179,9 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 					int64planmodifier.UseStateForUnknown(),
 					requiresReplaceOnIDChange(),
 				},
+				Validators: []validator.Int64{
+					int64AtLeast("traffic_plan_id", 1),
+				},
 			},
 			"traffic_plan_name": schema.StringAttribute{
 				Description: "Traffic plan name from the catalog (e.g. 3 TB / 1 Gbps VM). Looks up traffic_plan_id if not set.",
@@ -174,6 +193,10 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 			"hostname": schema.StringAttribute{
 				Description: "Server hostname.",
 				Optional:    true,
+				Validators: []validator.String{
+					hostnameValidator(),
+					stringMaxLen("hostname", maxHostnameLen),
+				},
 			},
 			"root_pass": schema.StringAttribute{
 				Description: "Root password (8-30 chars: upper, lower, digit, and one of % - _ +; no @/#). Change triggers reinstall.",
@@ -186,6 +209,9 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 			"ssh_key": schema.StringAttribute{
 				Description: "Public SSH key injected during deploy/reinstall. Change triggers reinstall.",
 				Optional:    true,
+				Validators: []validator.String{
+					sshPublicKeyValidator(),
+				},
 			},
 			"post_install_script": schema.StringAttribute{
 				Description: "Post-install shell script. Change triggers reinstall.",
@@ -210,14 +236,38 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Optional:    true,
 			},
 			"root_size": schema.Int64Attribute{
-				Description: "Root partition size in GB. Change triggers reinstall.",
+				Description: "Root partition size in GB for the OS volume. Omit to use the full boot disk (panel: 100% of boot disk). Change triggers reinstall.",
 				Optional:    true,
+				Validators: []validator.Int64{
+					int64Between("root_size", minRootSizeGB, maxRootSizeGB),
+				},
+			},
+			"disk_mirror": schema.StringAttribute{
+				Description: "Bare-metal disk layout via InvAPI disk_mirror: hba, raid0, raid1, raid10. Validated against presets/list disk count (hdd/description). Omit when the catalog shows 1 disk (panel RAID type is empty; hba is not processed). RAID0/1 need 2+ disks; RAID10 needs 4+. Change triggers reinstall.",
+				Optional:    true,
+				Validators: []validator.String{
+					diskMirrorValidator(),
+				},
+			},
+			"no_lvm": schema.BoolAttribute{
+				Description: "Disable LVM and use classic partitions (bare metal only). Maps to InvAPI no_lvm=1. Change triggers reinstall.",
+				Optional:    true,
+			},
+			"ipv6_block": schema.BoolAttribute{
+				Description: "Request IPv6 /64 at order time for dedicated presets (catalog virtual=0) in NL/US. InvAPI presets/list does not expose a per-preset IPv6 checkbox; omit unless the order form shows it. Maps to InvAPI ipv6=1. Forces replace.",
+				Optional:    true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
+				},
 			},
 			"ipv4_amount": schema.Int64Attribute{
 				Description: "Number of IPv4 addresses to order.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
+				},
+				Validators: []validator.Int64{
+					int64Between("ipv4_amount", minIPv4Amount, maxIPv4Amount),
 				},
 			},
 			"vlan": schema.Int64Attribute{
@@ -226,12 +276,18 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
 				},
+				Validators: []validator.Int64{
+					int64AtLeast("vlan", 1),
+				},
 			},
 			"private_vlan": schema.Int64Attribute{
 				Description: "Private VLAN ID (InvAPI private_vlan).",
 				Optional:    true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
+				},
+				Validators: []validator.Int64{
+					int64AtLeast("private_vlan", 1),
 				},
 			},
 			"custom_domain": schema.StringAttribute{
@@ -253,7 +309,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"extra_order_params": schema.MapAttribute{
-				Description: "Extra eq/order_instance form fields not covered by other attributes.",
+				Description: "Advanced: closed. All eq/order_instance fields are typed attributes; any extra_order_params key is rejected and is not forwarded.",
 				ElementType: types.StringType,
 				Optional:    true,
 				PlanModifiers: []planmodifier.Map{
@@ -268,6 +324,9 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 			"poll_interval_seconds": schema.Int64Attribute{
 				Description: "How often to poll deploy status (default 15).",
 				Optional:    true,
+				Validators: []validator.Int64{
+					int64Between("poll_interval_seconds", minPollIntervalSecs, maxPollIntervalSecs),
+				},
 			},
 			"main_ipv4": schema.StringAttribute{
 				Description: "Primary IPv4 address after deploy.",
@@ -350,14 +409,23 @@ func (r *serverResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 	if !req.State.Raw.IsNull() {
 		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	}
-	if err := r.resolveOrderIDs(ctx, &plan); err != nil {
-		resp.Diagnostics.AddWarning("Catalog name resolve", err.Error())
+	if r.client != nil {
+		if err := r.resolveOrderIDs(ctx, &plan); err != nil {
+			resp.Diagnostics.AddError("Catalog name resolve failed", err.Error())
+			return
+		}
+		if err := r.verifyOrderCatalog(ctx, &plan); err != nil {
+			resp.Diagnostics.AddError("Catalog verification failed", err.Error())
+			return
+		}
 	}
 	// Keep optional computed ids null/known instead of unknown when names were not requested.
 	stabilizeOptionalID(&plan.SoftID, plan.SoftName, state.SoftID)
 	stabilizeOptionalID(&plan.TrafficPlanID, plan.TrafficPlanName, state.TrafficPlanID)
 	stabilizeOptionalID(&plan.OSID, plan.OSName, state.OSID)
 	stabilizeOptionalID(&plan.PresetID, plan.PresetName, state.PresetID)
+
+	resp.Diagnostics.Append(validateServerPlan(ctx, plan, state, req.State.Raw.IsNull())...)
 
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
@@ -388,6 +456,10 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	if err := r.resolveOrderIDs(ctx, &plan); err != nil {
 		resp.Diagnostics.AddError("Catalog name resolve failed", err.Error())
+		return
+	}
+	if err := r.verifyOrderCatalog(ctx, &plan); err != nil {
+		resp.Diagnostics.AddError("Catalog verification failed", err.Error())
 		return
 	}
 
@@ -804,6 +876,10 @@ func (r *serverResource) Delete(ctx context.Context, req resource.DeleteRequest,
 }
 
 func (r *serverResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resp.Diagnostics.Append(validateServerImportID(req.ID)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
@@ -919,6 +995,17 @@ func buildOrderRequest(plan serverModel) invapi.OrderInstanceRequest {
 	if !plan.RootSize.IsNull() {
 		orderReq.RootSize = int(plan.RootSize.ValueInt64())
 	}
+	if !plan.DiskMirror.IsNull() && plan.DiskMirror.ValueString() != "" {
+		orderReq.DiskMirror = strings.ToLower(strings.TrimSpace(plan.DiskMirror.ValueString()))
+	}
+	if !plan.NoLVM.IsNull() {
+		v := plan.NoLVM.ValueBool()
+		orderReq.NoLVM = &v
+	}
+	if !plan.IPv6Block.IsNull() {
+		v := plan.IPv6Block.ValueBool()
+		orderReq.IPv6Block = &v
+	}
 	if !plan.IPv4Amount.IsNull() {
 		orderReq.IPv4Amount = int(plan.IPv4Amount.ValueInt64())
 	}
@@ -936,16 +1023,6 @@ func buildOrderRequest(plan serverModel) invapi.OrderInstanceRequest {
 	}
 	if !plan.DeployOptions.IsNull() {
 		orderReq.DeployOptions = plan.DeployOptions.ValueString()
-	}
-	if !plan.ExtraOrderParams.IsNull() && !plan.ExtraOrderParams.IsUnknown() {
-		raw := map[string]types.String{}
-		_ = plan.ExtraOrderParams.ElementsAs(context.Background(), &raw, false)
-		if len(raw) > 0 {
-			orderReq.Extra = make(map[string]string, len(raw))
-			for k, v := range raw {
-				orderReq.Extra[k] = v.ValueString()
-			}
-		}
 	}
 	return orderReq
 }

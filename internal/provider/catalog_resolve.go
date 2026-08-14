@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -14,6 +16,17 @@ type namedID struct {
 	ID   int
 	Name string
 }
+
+type trafficNamedID struct {
+	ID    int
+	Name  string
+	Price float64
+}
+
+var (
+	trafficFreeSuffix = regexp.MustCompile(`(?i)\s*-\s*FREE\s*$`)
+	trafficPriceParen = regexp.MustCompile(`(?i)\s*\((\d+(?:\.\d+)?)\s*P\)\s*$`)
+)
 
 func matchNamedID(query string, items []namedID) (int, error) {
 	q := strings.TrimSpace(query)
@@ -33,20 +46,7 @@ func matchNamedID(query string, items []namedID) (int, error) {
 	if len(exact) > 1 {
 		return 0, fmt.Errorf("name %q matches multiple entries: %s", q, joinNames(exact))
 	}
-
-	var partial []namedID
-	for _, it := range items {
-		if containsFold(it.Name, q) {
-			partial = append(partial, it)
-		}
-	}
-	if len(partial) == 1 {
-		return partial[0].ID, nil
-	}
-	if len(partial) > 1 {
-		return 0, fmt.Errorf("name %q is ambiguous (%d matches): %s — use a more specific name or the numeric id", q, len(partial), joinNames(partial))
-	}
-	return 0, fmt.Errorf("name %q not found", q)
+	return 0, fmt.Errorf("name %q not found (exact catalog match required)", q)
 }
 
 func joinNames(items []namedID) string {
@@ -78,10 +78,12 @@ func resolveOSID(ctx context.Context, client *invapi.Client, location string, pr
 		return 0, err
 	}
 	items := make([]namedID, 0, len(list.OSList))
+	actives := make([]int, 0, len(list.OSList))
 	for _, o := range list.OSList {
 		items = append(items, namedID{ID: o.ID, Name: o.Name})
+		actives = append(actives, o.Active)
 	}
-	return matchNamedID(name, items)
+	return matchNamedID(name, filterActiveNamedIDs(items, actives))
 }
 
 func resolveSoftID(ctx context.Context, client *invapi.Client, location string, presetID int, name string) (int, error) {
@@ -93,10 +95,12 @@ func resolveSoftID(ctx context.Context, client *invapi.Client, location string, 
 		return 0, err
 	}
 	items := make([]namedID, 0, len(list.Software))
+	actives := make([]int, 0, len(list.Software))
 	for _, s := range list.Software {
 		items = append(items, namedID{ID: s.ID, Name: s.Name})
+		actives = append(actives, s.Active)
 	}
-	return matchNamedID(name, items)
+	return matchNamedID(name, filterActiveNamedIDs(items, actives))
 }
 
 func resolveTrafficPlanID(ctx context.Context, client *invapi.Client, location string, presetID int, name string) (int, error) {
@@ -110,11 +114,113 @@ func resolveTrafficPlanID(ctx context.Context, client *invapi.Client, location s
 	if err != nil {
 		return 0, err
 	}
-	items := make([]namedID, 0, len(list.TrafficPlans))
+	items := make([]trafficNamedID, 0, len(list.TrafficPlans))
 	for _, p := range list.TrafficPlans {
-		items = append(items, namedID{ID: p.ID, Name: p.Name})
+		if p.Active == 0 {
+			continue
+		}
+		items = append(items, trafficNamedID{ID: p.ID, Name: p.Name, Price: p.Price})
 	}
-	return matchNamedID(name, items)
+	if len(items) == 0 {
+		for _, p := range list.TrafficPlans {
+			items = append(items, trafficNamedID{ID: p.ID, Name: p.Name, Price: p.Price})
+		}
+	}
+	return matchTrafficPlan(name, items)
+}
+
+// matchTrafficPlan resolves InvAPI traffic plan names.
+// Dedicated catalogs often expose duplicate names distinguished only by price
+// (panel labels like "1Gbps 50TB - FREE" / "1Gbps unmetered (10000 P)").
+func matchTrafficPlan(query string, items []trafficNamedID) (int, error) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return 0, fmt.Errorf("empty name")
+	}
+
+	var wantPrice *float64
+	base := q
+	if trafficFreeSuffix.MatchString(base) {
+		base = strings.TrimSpace(trafficFreeSuffix.ReplaceAllString(base, ""))
+		z := 0.0
+		wantPrice = &z
+	} else if m := trafficPriceParen.FindStringSubmatch(base); len(m) == 2 {
+		base = strings.TrimSpace(trafficPriceParen.ReplaceAllString(base, ""))
+		p, err := strconv.ParseFloat(m[1], 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid price hint in %q: %w", query, err)
+		}
+		wantPrice = &p
+	}
+
+	exact := filterTrafficByName(base, items, true)
+	if len(exact) == 0 {
+		exact = filterTrafficByName(base, items, false)
+	}
+	if len(exact) == 0 {
+		return 0, fmt.Errorf("name %q not found", query)
+	}
+	if wantPrice != nil {
+		var priced []trafficNamedID
+		for _, it := range exact {
+			if it.Price == *wantPrice {
+				priced = append(priced, it)
+			}
+		}
+		if len(priced) == 1 {
+			return priced[0].ID, nil
+		}
+		if len(priced) == 0 {
+			return 0, fmt.Errorf("name %q: no plan with price %g; candidates: %s", query, *wantPrice, joinTrafficNames(exact))
+		}
+		exact = priced
+	}
+	if len(exact) == 1 {
+		return exact[0].ID, nil
+	}
+	return 0, fmt.Errorf("name %q is ambiguous (%d matches): %s — use traffic_plan_id or a panel-style name with price hint (e.g. \"… - FREE\", \"… (10000 P)\")", query, len(exact), joinTrafficNames(exact))
+}
+
+func filterTrafficByName(query string, items []trafficNamedID, exact bool) []trafficNamedID {
+	var out []trafficNamedID
+	for _, it := range items {
+		name := strings.TrimSpace(it.Name)
+		if exact {
+			if strings.EqualFold(name, query) {
+				out = append(out, it)
+			}
+			continue
+		}
+		// Price-hint path already stripped the suffix; still require exact base name.
+		if strings.EqualFold(name, query) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func filterActiveNamedIDs(items []namedID, active []int) []namedID {
+	if len(items) != len(active) {
+		return items
+	}
+	out := make([]namedID, 0, len(items))
+	for i, it := range items {
+		if active[i] != 0 {
+			out = append(out, it)
+		}
+	}
+	if len(out) == 0 {
+		return items
+	}
+	return out
+}
+
+func joinTrafficNames(items []trafficNamedID) string {
+	parts := make([]string, 0, len(items))
+	for _, it := range items {
+		parts = append(parts, fmt.Sprintf("%q (id=%d, price=%g)", it.Name, it.ID, it.Price))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // resolveOrderIDs fills numeric IDs from human-readable names on the plan.

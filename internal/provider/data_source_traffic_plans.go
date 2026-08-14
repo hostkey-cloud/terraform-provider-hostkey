@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
@@ -41,14 +42,23 @@ func (d *trafficPlansDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 			"location": schema.StringAttribute{
 				Description: "DC location filter.",
 				Optional:    true,
+				Validators: []validator.String{
+					locationCodeValidator(),
+				},
 			},
 			"instance_id": schema.Int64Attribute{
 				Description: "Preset ID for compatible plans.",
 				Optional:    true,
+				Validators: []validator.Int64{
+					int64AtLeast("instance_id", 1),
+				},
 			},
 			"server_id": schema.Int64Attribute{
 				Description: "Existing server ID for compatible plans.",
 				Optional:    true,
+				Validators: []validator.Int64{
+					invapiServerIDValidator(),
+				},
 			},
 			"name": schema.StringAttribute{
 				Description: "Optional substring filter on plan name.",
@@ -106,7 +116,7 @@ func (d *trafficPlansDataSource) Read(ctx context.Context, req datasource.ReadRe
 		resp.Diagnostics.AddError(
 			"traffic_plans/list failed",
 			err.Error()+"\n\nSpecify location (and optionally instance_id). "+
-				"See docs/data-sources/traffic_plans.md and https://hostkey.ru/documentation/apidocs/traffic_plans/#traffic_planslist",
+				"See docs/data-sources/traffic_plans.md — InvAPI traffic_plans/list: https://hostkey.com/documentation/apidocs/traffic_plans/#traffic_planslist (RU: https://hostkey.ru/documentation/apidocs/traffic_plans/#traffic_planslist)",
 		)
 		return
 	}

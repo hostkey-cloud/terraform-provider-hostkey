@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
@@ -61,6 +62,9 @@ func (r *serverIPResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
 				},
+				Validators: []validator.Int64{
+					invapiServerIDValidator(),
+				},
 			},
 			"ip": schema.StringAttribute{
 				Description: "IPv4 address. Optional on create (InvAPI assigns). Required after create / for import.",
@@ -70,12 +74,18 @@ func (r *serverIPResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 					stringplanmodifier.RequiresReplace(),
 					stringplanmodifier.UseStateForUnknown(),
 				},
+				Validators: []validator.String{
+					ipv4AddressValidator(),
+				},
 			},
 			"port": schema.StringAttribute{
 				Description: "Network port name (default eth0).",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					networkPortValidator(),
 				},
 			},
 			"vlan": schema.Int64Attribute{
@@ -197,17 +207,12 @@ func (r *serverIPResource) Delete(ctx context.Context, req resource.DeleteReques
 }
 
 func (r *serverIPResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// Format: <server_id>/<ip>
+	resp.Diagnostics.Append(validateServerIPImportID(req.ID)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	parts := strings.SplitN(req.ID, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		resp.Diagnostics.AddError("Invalid import id", "Use <server_id>/<ip>, e.g. 5860/1.2.3.4")
-		return
-	}
-	serverID, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid server_id", err.Error())
-		return
-	}
+	serverID, _ := strconv.ParseInt(parts[0], 10, 64)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("server_id"), serverID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("ip"), parts[1])...)

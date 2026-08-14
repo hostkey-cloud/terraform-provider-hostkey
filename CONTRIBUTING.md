@@ -39,6 +39,10 @@ go test ./internal/provider -v -timeout 120m -run TestAcc
 
 DNS acceptance needs `HOSTKEY_ACC_DNS_DOMAIN`. Do not point tests at servers you must not destroy.
 
+## Release
+
+Tag `v*` (e.g. `v0.1.1`) and push it. [`.github/workflows/release.yml`](.github/workflows/release.yml) runs GoReleaser (Actions secrets `GPG_PRIVATE_KEY`, `PASSPHRASE`). Update [CHANGELOG.md](CHANGELOG.md) first. Do not commit API keys or Terraform state.
+
 ## Pull requests
 
 - Keep diffs focused; match existing style.

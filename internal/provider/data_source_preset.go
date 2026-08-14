@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
@@ -42,6 +43,9 @@ func (d *presetDataSource) Schema(_ context.Context, _ datasource.SchemaRequest,
 			"id": schema.Int64Attribute{
 				Description: "Preset ID from presets/list.",
 				Required:    true,
+				Validators: []validator.Int64{
+					int64AtLeast("id", 1),
+				},
 			},
 			"name": schema.StringAttribute{
 				Description: "Preset name (e.g. vm.pico).",
@@ -127,7 +131,7 @@ type presetDetail struct {
 func decodePreset(single, list json.RawMessage, wantID int) (presetDetail, error) {
 	if len(single) > 0 && string(single) != "null" {
 		var p presetDetail
-		if err := json.Unmarshal(single, &p); err == nil && p.ID != 0 {
+		if err := json.Unmarshal(single, &p); err == nil && p.ID != 0 && (wantID == 0 || p.ID == wantID) {
 			return p, nil
 		}
 	}
@@ -141,7 +145,7 @@ func decodePreset(single, list json.RawMessage, wantID int) (presetDetail, error
 				return p, nil
 			}
 		}
-		if len(presets) == 1 {
+		if len(presets) == 1 && (wantID == 0 || presets[0].ID == wantID) {
 			return presets[0], nil
 		}
 		return presetDetail{}, fmt.Errorf("preset id %d not found in response", wantID)

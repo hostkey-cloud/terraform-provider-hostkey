@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
@@ -56,12 +57,18 @@ func (r *dnsDomainResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
+				Validators: []validator.String{
+					dnsZoneValidator(),
+				},
 			},
 			"server_id": schema.Int64Attribute{
 				Description: "Optional InvAPI server id to associate with the domain.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
+				},
+				Validators: []validator.Int64{
+					invapiServerIDValidator(),
 				},
 			},
 		},
@@ -155,7 +162,10 @@ func (r *dnsDomainResource) Delete(ctx context.Context, req resource.DeleteReque
 }
 
 func (r *dnsDomainResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// id or name
+	resp.Diagnostics.Append(validateDNSDomainImportID(req.ID)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if n, err := strconv.Atoi(req.ID); err == nil {
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), strconv.Itoa(n))...)
 		return

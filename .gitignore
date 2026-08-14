@@ -75,9 +75,12 @@ temp/
 .cursor/
 .direnv/
 .DS_Store
+scripts/
 Thumbs.db
 Desktop.ini
 *.user
+*.ps1
+*.bat
 
 # Local Terraform CLI override copies (keep the template in examples/)
 terraform.rc

@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
@@ -60,6 +61,9 @@ func (r *sshKeyResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
+				Validators: []validator.String{
+					stringMaxLen("name", maxSSHKeyNameLen),
+				},
 			},
 			"key": schema.StringAttribute{
 				Description: "Public SSH key (ssh-ed25519 / ssh-rsa / …). Comment after the key is optional.",
@@ -67,6 +71,9 @@ func (r *sshKeyResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				Sensitive:   true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					sshPublicKeyValidator(),
 				},
 			},
 			"default": schema.BoolAttribute{
@@ -149,7 +156,9 @@ func (r *sshKeyResource) Read(ctx context.Context, req resource.ReadRequest, res
 	}
 
 	state.Name = types.StringValue(key.Name)
-	state.Key = types.StringValue(key.Key)
+	if state.Key.IsNull() || !sshPublicKeysEquivalent(state.Key.ValueString(), key.Key) {
+		state.Key = types.StringValue(key.Key)
+	}
 	state.Default = types.BoolValue(key.Default != 0)
 	if key.Created != "" {
 		state.Created = types.StringValue(key.Created)
@@ -186,5 +195,9 @@ func (r *sshKeyResource) Delete(ctx context.Context, req resource.DeleteRequest,
 }
 
 func (r *sshKeyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resp.Diagnostics.Append(validateSSHKeyImportID(req.ID)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }

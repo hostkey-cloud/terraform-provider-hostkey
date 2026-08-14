@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
@@ -39,6 +40,9 @@ func (d *presetsDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 			"location": schema.StringAttribute{
 				Description: "DC location filter (e.g. NL).",
 				Optional:    true,
+				Validators: []validator.String{
+					locationCodeValidator(),
+				},
 			},
 			"name": schema.StringAttribute{
 				Description: "Optional exact preset name filter (e.g. vm.pico).",

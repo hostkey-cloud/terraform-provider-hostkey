@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
@@ -19,6 +20,7 @@ import (
 var (
 	_ resource.Resource                = &dnsRecordResource{}
 	_ resource.ResourceWithImportState = &dnsRecordResource{}
+	_ resource.ResourceWithModifyPlan  = &dnsRecordResource{}
 )
 
 type dnsRecordResource struct {
@@ -60,6 +62,9 @@ func (r *dnsRecordResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
+				Validators: []validator.String{
+					dnsZoneValidator(),
+				},
 			},
 			"name": schema.StringAttribute{
 				Description: "Record name relative to zone (e.g. www or @).",
@@ -67,12 +72,18 @@ func (r *dnsRecordResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
+				Validators: []validator.String{
+					dnsRecordNameValidator(),
+				},
 			},
 			"type": schema.StringAttribute{
 				Description: "Record type: A, AAAA, CNAME, MX, TXT, NS, …",
 				Required:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					dnsRecordTypeValidator(),
 				},
 			},
 			"content": schema.StringAttribute{
@@ -88,12 +99,18 @@ func (r *dnsRecordResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
 				},
+				Validators: []validator.Int64{
+					int64Between("ttl", minDNSTTL, maxDNSTTL),
+				},
 			},
 			"priority": schema.Int64Attribute{
 				Description: "Priority for MX/SRV.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
+				},
+				Validators: []validator.Int64{
+					int64Between("priority", 0, maxDNSPriority),
 				},
 			},
 		},
@@ -112,6 +129,18 @@ func (r *dnsRecordResource) Configure(_ context.Context, req resource.ConfigureR
 	r.client = client
 }
 
+func (r *dnsRecordResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var plan dnsRecordModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(validateDNSRecordFields(plan)...)
+}
+
 func dnsRecordID(zone, name, typ, content string) string {
 	return strings.Join([]string{zone, name, strings.ToUpper(typ), content}, "/")
 }
@@ -119,6 +148,10 @@ func dnsRecordID(zone, name, typ, content string) string {
 func (r *dnsRecordResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan dnsRecordModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(validateDNSRecordFields(plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -197,12 +230,11 @@ func (r *dnsRecordResource) Delete(ctx context.Context, req resource.DeleteReque
 }
 
 func (r *dnsRecordResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// zone/name/type/content
-	parts := strings.SplitN(req.ID, "/", 4)
-	if len(parts) != 4 {
-		resp.Diagnostics.AddError("Invalid import id", "Use zone/name/type/content")
+	resp.Diagnostics.Append(validateDNSRecordImportID(req.ID)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
+	parts := strings.SplitN(req.ID, "/", 4)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("zone"), parts[0])...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), parts[1])...)

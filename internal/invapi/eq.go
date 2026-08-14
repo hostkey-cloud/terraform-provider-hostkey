@@ -95,6 +95,19 @@ func (c *Client) EQOrderInstance(ctx context.Context, req OrderInstanceRequest) 
 	if req.RootSize > 0 {
 		params.Set("root_size", strconv.Itoa(req.RootSize))
 	}
+	if req.DiskMirror != "" {
+		params.Set("disk_mirror", req.DiskMirror)
+	}
+	if req.NoLVM != nil {
+		if *req.NoLVM {
+			params.Set("no_lvm", "1")
+		} else {
+			params.Set("no_lvm", "0")
+		}
+	}
+	if req.IPv6Block != nil && *req.IPv6Block {
+		params.Set("ipv6", "1")
+	}
 	if req.IPv4Amount > 0 {
 		params.Set("ipv4_amount", strconv.Itoa(req.IPv4Amount))
 	}
@@ -112,14 +125,6 @@ func (c *Client) EQOrderInstance(ctx context.Context, req OrderInstanceRequest) 
 	}
 	if req.DeployOptions != "" {
 		params.Set("deploy_options", req.DeployOptions)
-	}
-	for k, v := range req.Extra {
-		if k == "" || k == "action" || k == "token" {
-			continue
-		}
-		if params.Get(k) == "" {
-			params.Set(k, v)
-		}
 	}
 
 	body, err := c.PostForm(ctx, "eq", params)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // LoginResponse covers both public auth/login shapes:
@@ -63,6 +64,9 @@ type OrderInstanceRequest struct {
 	DeployNotify      *bool // nil = omit (InvAPI default)
 	OwnOS             bool
 	RootSize          int
+	DiskMirror        string // hba, raid0, raid1, raid10 (bare metal)
+	NoLVM             *bool  // nil = omit; bare metal only
+	IPv6Block         *bool  // nil = omit; dedicated NL/US — panel "IPv6 /64 block"
 	IPv4Amount        int
 	VLAN              int
 	PrivateVLAN       int
@@ -70,7 +74,42 @@ type OrderInstanceRequest struct {
 	OSTemplate        string
 	DeployOptions     string
 	ServerID          int               // non-zero => reinstall existing server
-	Extra             map[string]string // escape hatch for any InvAPI form field
+	Extra             map[string]string // optional InvAPI form fields not covered by typed fields
+}
+
+// reservedOrderExtraKeys must never be supplied via Extra (typed fields or provider-managed).
+var reservedOrderExtraKeys = map[string]struct{}{
+	"action":              {},
+	"token":               {},
+	"id":                  {},
+	"preset":              {},
+	"root_pass":           {},
+	"price":               {},
+	"location_name":       {},
+	"os_id":               {},
+	"soft_id":             {},
+	"traffic_plan":        {},
+	"hostname":            {},
+	"ssh_key":             {},
+	"post_install_script": {},
+	"deploy_period":       {},
+	"deploy_notify":       {},
+	"own_os":              {},
+	"root_size":           {},
+	"disk_mirror":         {},
+	"no_lvm":              {},
+	"ipv6":                {},
+	"ipv4_amount":         {},
+	"vlan":                {},
+	"private_vlan":        {},
+	"custom_domain":       {},
+	"os_template":         {},
+	"deploy_options":      {},
+}
+
+func IsReservedOrderExtraKey(key string) bool {
+	_, ok := reservedOrderExtraKeys[strings.ToLower(strings.TrimSpace(key))]
+	return ok
 }
 
 type OrderInstanceResponse struct {
@@ -196,9 +235,40 @@ type PresetListResponse struct {
 }
 
 type Preset struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name"`
-	Location    string `json:"location"`
-	Description string `json:"description"`
-	Locations   string `json:"locations"`
+	ID          int        `json:"id"`
+	Name        string     `json:"name"`
+	Location    string     `json:"location"`
+	Description string     `json:"description"`
+	Locations   string     `json:"locations"`
+	HDD         FlexString `json:"hdd"`
+	Virtual     int        `json:"virtual"`
+	ServerType  string     `json:"server_type"`
+}
+
+// Dedicated is true for Instant Dedicated / GPU hardware (virtual=0 in presets/list).
+func (p Preset) Dedicated() bool {
+	return p.Virtual == 0
+}
+
+// FlexString accepts JSON string or number (InvAPI hdd is sometimes "2x960", sometimes 1000).
+type FlexString string
+
+func (s FlexString) String() string { return string(s) }
+
+func (s *FlexString) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "null" {
+		*s = ""
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(b, &str); err == nil {
+		*s = FlexString(str)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(b, &n); err == nil {
+		*s = FlexString(n.String())
+		return nil
+	}
+	return fmt.Errorf("flex string: %s", truncate(b, 64))
 }

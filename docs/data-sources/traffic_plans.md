@@ -7,17 +7,21 @@ description: |-
 
 # hostkey_traffic_plans (Data Source)
 
-Lists traffic plans (`traffic_plans/list`). InvAPI often requires `location`. The provider requests this list **without** a customer session token (sending a token frequently breaks the call).
+Lists traffic plans ([`traffic_plans/list`](https://hostkey.com/documentation/apidocs/traffic_plans/#traffic_planslist) · [RU](https://hostkey.ru/documentation/apidocs/traffic_plans/#traffic_planslist)). InvAPI often requires `location`. The provider requests this list **without** a customer session token (sending a token frequently breaks the call).
 
 VPS and dedicated presets use **different** plan names. Examples (exact strings change — always check the list):
 
-| Kind | Example `name` |
-|------|----------------|
+| Kind | Example name in HCL |
+|------|---------------------|
 | VPS | `3 TB / 1 Gbps VM` |
-| Dedicated | `1Gbps 50TB - FREE` |
-| Dedicated | `1Gbps unmetered (10000 P)` |
+| Dedicated | `1Gbps 50TB - FREE` (panel) → InvAPI name `1Gbps 50TB`, price `0` |
+| Dedicated | `1Gbps unmetered (10000 P)` (panel) → InvAPI name `1Gbps unmetered`, price `10000` |
+| Dedicated GPU (`gpu.*`) | Often unmetered / unlimited style — list with `instance_id` |
+| VDS GPU (`vgpu.*`) | Often `1Gbps 50TB` style — list with `instance_id` |
 
-Pass `instance_id` (preset id) to see plans compatible with that preset.
+Promo dedic is **`bm.v2-promo`** (not `v2-promo`). Pass `instance_id` (preset id) to list compatible plans. When two rows share a name, prefer a price hint or `traffic_plan_id`.
+
+InvAPI: [`traffic_plans/list`](https://hostkey.com/documentation/apidocs/traffic_plans/#traffic_planslist) · [RU](https://hostkey.ru/documentation/apidocs/traffic_plans/#traffic_planslist).
 
 ```hcl
 data "hostkey_traffic_plans" "nl" {
@@ -27,7 +31,7 @@ data "hostkey_traffic_plans" "nl" {
 # Plans compatible with a dedicated preset (pass preset id from presets/list):
 data "hostkey_traffic_plans" "for_dedic" {
   location    = "NL"
-  instance_id = 12345 # e.g. id of v2-promo
+  instance_id = 243 # e.g. bm.v2-promo; GPU: gpu.v2-a5000 id from presets/list
   name        = "1Gbps"
 }
 ```

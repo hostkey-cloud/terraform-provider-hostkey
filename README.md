@@ -1,6 +1,6 @@
 # Hostkey | Terraform Provider
 
-Terraform позволяет управлять инфраструктурой [Hostkey](https://hostkey.com/) (VPS и dedicated) через [InvAPI](https://hostkey.com/documentation/apidocs/api_index/) с помощью конфигурации HCL и планов изменений.
+Terraform позволяет управлять инфраструктурой [Hostkey](https://hostkey.ru/) (VPS, dedicated, GPU, vGPU) через [InvAPI](https://hostkey.ru/documentation/apidocs/api_index/) с помощью конфигурации HCL и планов изменений.
 
 English version: [README.en.md](README.en.md).
 
@@ -64,26 +64,38 @@ resource "hostkey_server" "web" {
   root_pass         = var.root_pass
 }
 
-# Dedicated — другой preset и тариф трафика (не VM):
+# Dedicated — catalog name is bm.v2-promo (not "v2-promo"):
 # resource "hostkey_server" "dedic" {
-#   preset_name       = "v2-promo"
+#   preset_name       = "bm.v2-promo"
 #   location_name     = "NL"
 #   os_name           = "Ubuntu 22.04"
-#   traffic_plan_name = "1Gbps 50TB - FREE"
-#   # traffic_plan_name = "1Gbps unmetered (10000 P)"
+#   traffic_plan_name = "1Gbps unmetered (10000 P)"
+#   deploy_period     = "monthly"
+#   root_pass         = var.root_pass
+#   # RAID type empty on this promo — omit disk_mirror
+#   no_lvm            = true
+#   ipv6_block        = true
+# }
+
+# GPU dedic — gpu.v2-a5000, gpu.v3-4090t, … / VDS GPU — vgpu.v2-a4000
+# resource "hostkey_server" "gpu" {
+#   preset_name       = "gpu.v2-a5000"
+#   location_name     = "NL"
+#   os_name           = "Ubuntu 22.04"
+#   traffic_plan_name = "1Gbps unmetered"
 #   deploy_period     = "monthly"
 #   root_pass         = var.root_pass
 # }
 ```
 
-Тарифы трафика у VPS и dedicated **разные**. Сверяйте имена через `data.hostkey_traffic_plans` / `data.hostkey_presets`. Подробнее: [docs/resources/server.md](docs/resources/server.md).
+Тот же `hostkey_server` для VPS (`vm.*`), dedic (`bm.*`), GPU (`gpu.*`) и vGPU (`vgpu.*`). Тарифы трафика **разные** — смотрите [`traffic_plans/list`](https://hostkey.ru/documentation/apidocs/traffic_plans/#traffic_planslist). Заказ сервера — [`eq/order_instance`](https://hostkey.ru/documentation/apidocs/eq/#order_instance). У dedic часто два плана с одним `name` и разной `price` — используйте подсказки как в панели (`- FREE`, `(10000 P)`) или `traffic_plan_id`. Для GPU смотрите планы с `instance_id` пресета. Подробнее: [docs/resources/server.md](docs/resources/server.md).
 
 Для локальной разработки без Registry: `go install` и [dev_overrides](examples/dev-terraform.rc) — см. [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### 3. API-ключ
 
-Создайте ключ в InvAPI: **Configuration → API keys**  
-([документация Hostkey](https://hostkey.com/documentation/controlpanel/apikey/)).
+Создайте ключ в [InvAPI](https://invapi.hostkey.ru): **Имя пользователя → API ключи** (ключ на весь аккаунт, `Any`).  
+([инструкция Hostkey](https://hostkey.ru/documentation/account/api_key_account/)).
 
 ```powershell
 $env:HOSTKEY_API_KEY = "ваш-ключ"
@@ -127,10 +139,9 @@ terraform destroy
 
 Провайдер обменивает ключ на сессионный токен (`auth/login`) и использует его в запросах к InvAPI.
 
-## Разработка и релиз
+## Разработка
 
 * Участие в разработке: [CONTRIBUTING.md](CONTRIBUTING.md)
-* Публикация релиза: [RELEASE.md](RELEASE.md)
 * Безопасность: [SECURITY.md](SECURITY.md)
 * История изменений: [CHANGELOG.md](CHANGELOG.md)
 * Лицензия: [MPL-2.0](LICENSE)

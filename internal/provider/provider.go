@@ -53,13 +53,16 @@ func (p *hostkeyProvider) Schema(_ context.Context, _ provider.SchemaRequest, re
 		Description: "Interact with Hostkey infrastructure via InvAPI.",
 		Attributes: map[string]schema.Attribute{
 			"api_key": schema.StringAttribute{
-				Description: "Account InvAPI API key (Configuration → API keys). May be set via HOSTKEY_API_KEY or HOSTKEY_API_TOKEN.",
+				Description: "Account InvAPI API key (InvAPI → Username → API keys). May be set via HOSTKEY_API_KEY or HOSTKEY_API_TOKEN. Docs: https://hostkey.com/documentation/account/api_key_account/",
 				Optional:    true,
 				Sensitive:   true,
 			},
 			"base_url": schema.StringAttribute{
 				Description: "InvAPI base URL, e.g. https://invapi.hostkey.com/ or https://invapi.hostkey.ru/. Overrides region when set. May be set via HOSTKEY_BASE_URL or HOSTKEY_API_URL.",
 				Optional:    true,
+				Validators: []validator.String{
+					invapiBaseURLValidator(),
+				},
 			},
 			"region": schema.StringAttribute{
 				Description: "Region selector when base_url is not set. One of: COM (default), RU.",
@@ -71,14 +74,23 @@ func (p *hostkeyProvider) Schema(_ context.Context, _ provider.SchemaRequest, re
 			"token_ttl": schema.Int64Attribute{
 				Description: "Session token TTL in seconds for auth/login (default 3600).",
 				Optional:    true,
+				Validators: []validator.Int64{
+					int64Between("token_ttl", 60, 86400),
+				},
 			},
 			"http_timeout": schema.Int64Attribute{
 				Description: "HTTP client timeout in seconds for InvAPI requests (default 60).",
 				Optional:    true,
+				Validators: []validator.Int64{
+					int64Between("http_timeout", 5, 600),
+				},
 			},
 			"max_retries": schema.Int64Attribute{
 				Description: "Max attempts for retryable InvAPI HTTP failures (default 3).",
 				Optional:    true,
+				Validators: []validator.Int64{
+					int64Between("max_retries", 1, 10),
+				},
 			},
 		},
 	}
@@ -110,6 +122,10 @@ func (p *hostkeyProvider) Configure(ctx context.Context, req provider.ConfigureR
 	}
 	if baseURL == "" {
 		baseURL = invapi.BaseURLForRegion(config.Region.ValueString())
+	}
+	if err := validateInvapiBaseURL(baseURL); err != nil {
+		resp.Diagnostics.AddError("Invalid base_url", err.Error())
+		return
 	}
 
 	ttl := int(config.TokenTTL.ValueInt64())

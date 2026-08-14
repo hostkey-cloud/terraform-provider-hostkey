@@ -46,6 +46,12 @@ func needsReinstall(plan, state serverModel) bool {
 	if intAttrChanged(plan.RootSize, state.RootSize) {
 		return true
 	}
+	if stringAttrChanged(plan.DiskMirror, state.DiskMirror) {
+		return true
+	}
+	if boolAttrChanged(plan.NoLVM, state.NoLVM) {
+		return true
+	}
 	if stringAttrChanged(plan.ReinstallTrigger, state.ReinstallTrigger) &&
 		!plan.ReinstallTrigger.IsNull() && plan.ReinstallTrigger.ValueString() != "" {
 		return true
@@ -84,6 +90,9 @@ func buildReinstallRequest(plan serverModel, serverID int) invapi.OrderInstanceR
 func (r *serverResource) applyReinstall(ctx context.Context, serverID int, plan serverModel) error {
 	if err := r.resolveOrderIDs(ctx, &plan); err != nil {
 		return fmt.Errorf("catalog resolve: %w", err)
+	}
+	if err := r.verifyOrderCatalog(ctx, &plan); err != nil {
+		return fmt.Errorf("catalog verify: %w", err)
 	}
 
 	ownOS := !plan.OwnOS.IsNull() && plan.OwnOS.ValueBool()

@@ -1,6 +1,6 @@
 # Hostkey | Terraform Provider
 
-Manage [Hostkey](https://hostkey.com/) infrastructure (VPS and dedicated) through [InvAPI](https://hostkey.com/documentation/apidocs/api_index/) using HCL and Terraform plans.
+Manage [Hostkey](https://hostkey.com/) infrastructure (VPS, dedicated, GPU, vGPU) through [InvAPI](https://hostkey.com/documentation/apidocs/api_index/) using HCL and Terraform plans.
 
 Русская версия: [README.md](README.md).
 
@@ -64,26 +64,38 @@ resource "hostkey_server" "web" {
   root_pass         = var.root_pass
 }
 
-# Dedicated — different preset and traffic plan (not VM):
+# Dedicated — catalog name is bm.v2-promo (not "v2-promo"):
 # resource "hostkey_server" "dedic" {
-#   preset_name       = "v2-promo"
+#   preset_name       = "bm.v2-promo"
 #   location_name     = "NL"
 #   os_name           = "Ubuntu 22.04"
-#   traffic_plan_name = "1Gbps 50TB - FREE"
-#   # traffic_plan_name = "1Gbps unmetered (10000 P)"
+#   traffic_plan_name = "1Gbps unmetered (10000 P)"
+#   deploy_period     = "monthly"
+#   root_pass         = var.root_pass
+#   # RAID type empty on this promo — omit disk_mirror
+#   no_lvm            = true
+#   ipv6_block        = true
+# }
+
+# GPU dedic — gpu.v2-a5000, gpu.v3-4090t, … / VDS GPU — vgpu.v2-a4000
+# resource "hostkey_server" "gpu" {
+#   preset_name       = "gpu.v2-a5000"
+#   location_name     = "NL"
+#   os_name           = "Ubuntu 22.04"
+#   traffic_plan_name = "1Gbps unmetered"
 #   deploy_period     = "monthly"
 #   root_pass         = var.root_pass
 # }
 ```
 
-VPS and dedicated use **different** traffic plan names. Confirm via `data.hostkey_traffic_plans` / `data.hostkey_presets`. See [docs/resources/server.md](docs/resources/server.md).
+The same `hostkey_server` resource covers VPS (`vm.*`), dedicated (`bm.*`), GPU (`gpu.*`), and vGPU (`vgpu.*`). Traffic plan names **differ** — see [`traffic_plans/list`](https://hostkey.com/documentation/apidocs/traffic_plans/#traffic_planslist). Server orders use [`eq/order_instance`](https://hostkey.com/documentation/apidocs/eq/#order_instance). Dedicated catalogs often expose duplicate InvAPI names with different prices — use panel-style hints (`- FREE`, `(10000 P)`) or `traffic_plan_id`. For GPU, list plans with `instance_id` set to the preset id. Confirm via `data.hostkey_traffic_plans` / `data.hostkey_presets`. See [docs/resources/server.md](docs/resources/server.md).
 
 For local development without the Registry: `go install` and [dev_overrides](examples/dev-terraform.rc) — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### 3. API key
 
-Create a key in InvAPI: **Configuration → API keys**  
-([Hostkey docs](https://hostkey.com/documentation/controlpanel/apikey/)).
+Create a key in [InvAPI](https://invapi.hostkey.com): **Username → API keys** (account-wide key, `Any`).  
+([Hostkey guide](https://hostkey.com/documentation/account/api_key_account/)).
 
 ```bash
 export HOSTKEY_API_KEY="your-key"
@@ -127,10 +139,9 @@ Ordering a server is **billed**. Deploy can take from tens of minutes up to abou
 
 The provider exchanges the account key for a short-lived session token (`auth/login`) and attaches it to InvAPI calls.
 
-## Development and release
+## Development
 
 * Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
-* Cutting a release: [RELEASE.md](RELEASE.md)
 * Security: [SECURITY.md](SECURITY.md)
 * Changelog: [CHANGELOG.md](CHANGELOG.md)
 * License: [MPL-2.0](LICENSE)

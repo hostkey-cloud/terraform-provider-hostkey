@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
@@ -42,18 +43,30 @@ func (d *softwareDataSource) Schema(_ context.Context, _ datasource.SchemaReques
 			"location": schema.StringAttribute{
 				Description: "DC location filter.",
 				Optional:    true,
+				Validators: []validator.String{
+					locationCodeValidator(),
+				},
 			},
 			"instance_id": schema.Int64Attribute{
 				Description: "Preset ID.",
 				Optional:    true,
+				Validators: []validator.Int64{
+					int64AtLeast("instance_id", 1),
+				},
 			},
 			"server_id": schema.Int64Attribute{
 				Description: "Existing server ID.",
 				Optional:    true,
+				Validators: []validator.Int64{
+					invapiServerIDValidator(),
+				},
 			},
 			"bill_period": schema.StringAttribute{
 				Description: "Billing period filter (monthly/hourly).",
 				Optional:    true,
+				Validators: []validator.String{
+					oneOfStrings("bill_period", "hourly", "monthly", "quarterly", "semi-annually", "annually"),
+				},
 			},
 			"name": schema.StringAttribute{
 				Description: "Optional substring filter on software name.",

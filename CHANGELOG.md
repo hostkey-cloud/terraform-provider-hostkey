@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-14
+
+### Added
+
+- `hostkey_server`: bare-metal disk options `disk_mirror` (hba/raid0/raid1/raid10), `no_lvm`, and network `ipv6_block` (NL/US) with validation and bm.* docs example
+- Schema and plan validation across provider/resources/data sources: InvAPI URLs, location codes, IPv4/IPv6, DNS zones/records, SSH keys, root password, server IDs, import IDs, cross-field server/DNS checks
+- Plan: `disk_mirror` is checked against InvAPI `presets/list` disk count (`hdd`/`description`); 1 disk → omit the field; RAID10 needs 4+ disks. `extra_order_params` is closed (any key rejected, not forwarded)
+- Catalog hardening: plan/apply re-check preset/OS/traffic/software against InvAPI lists; exact catalog names only; duplicate same-price traffic names require `traffic_plan_id` or a price hint
+
+### Fixed
+
+- Resolve dedicated traffic plans when InvAPI returns duplicate names: accept panel-style hints (`- FREE`, `(10000 P)`); ambiguous same-price rows require `traffic_plan_id`
+- Documentation links: account API keys (`account/api_key_account`), RU README on `hostkey.ru`, EN/Registry on `hostkey.com`
+
 ### Changed
 
-- Docs: dedicated examples (`v2-promo`) and dedic traffic plans (`1Gbps 50TB - FREE`, `1Gbps unmetered (10000 P)`) in README and `docs/resources/server.md`
+- Docs: dedicated uses `bm.v2-promo`; traffic plan examples aligned with InvAPI (`1Gbps 50TB - FREE`, `1Gbps unmetered (10000 P)`); GPU (`gpu.*`) and vGPU (`vgpu.*`) examples on `hostkey_server`
 - Documentation reorganized for public release (README RU/EN, Registry `docs/`, consolidated contributor docs)
 
 ## [0.1.0] - TBD
