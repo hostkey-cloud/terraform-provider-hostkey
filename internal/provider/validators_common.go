@@ -350,4 +350,3 @@ func (v int64FuncValidator) ValidateInt64(_ context.Context, req validator.Int64
 		resp.Diagnostics.AddAttributeError(req.Path, fmt.Sprintf("Invalid %s", v.name), err.Error())
 	}
 }
-
