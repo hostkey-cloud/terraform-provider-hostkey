@@ -46,12 +46,12 @@ func TestMatchTrafficPlan(t *testing.T) {
 		{ID: 35, Name: "1Gbps unmetered", Price: 10000},
 	}
 
-	id, err := matchTrafficPlan("1Gbps 50TB - FREE", items)
+	_, err := matchTrafficPlan("1Gbps 50TB - FREE", items)
 	if err == nil {
 		t.Fatal("expected ambiguous FREE when two rows share name+price 0")
 	}
 
-	id, err = matchTrafficPlan("1Gbps 50TB - FREE", []trafficNamedID{
+	id, err := matchTrafficPlan("1Gbps 50TB - FREE", []trafficNamedID{
 		{ID: 12, Name: "1Gbps 50TB", Price: 0},
 		{ID: 35, Name: "1Gbps unmetered", Price: 10000},
 	})
