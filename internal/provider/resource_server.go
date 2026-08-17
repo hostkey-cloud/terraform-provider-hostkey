@@ -409,15 +409,20 @@ func (r *serverResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 	if !req.State.Raw.IsNull() {
 		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	}
-	if r.client != nil {
-		if err := r.resolveOrderIDs(ctx, &plan); err != nil {
-			resp.Diagnostics.AddError("Catalog name resolve failed", err.Error())
-			return
-		}
-		if err := r.verifyOrderCatalog(ctx, &plan); err != nil {
-			resp.Diagnostics.AddError("Catalog verification failed", err.Error())
-			return
-		}
+	if r.client == nil {
+		resp.Diagnostics.AddError(
+			"Provider not configured",
+			"Configure the hostkey provider (api_key, region) before planning hostkey_server changes.",
+		)
+		return
+	}
+	if err := r.resolveOrderIDs(ctx, &plan); err != nil {
+		resp.Diagnostics.AddError("Catalog name resolve failed", err.Error())
+		return
+	}
+	if err := r.verifyOrderCatalog(ctx, &plan); err != nil {
+		resp.Diagnostics.AddError("Catalog verification failed", err.Error())
+		return
 	}
 	// Keep optional computed ids null/known instead of unknown when names were not requested.
 	stabilizeOptionalID(&plan.SoftID, plan.SoftName, state.SoftID)
@@ -504,7 +509,6 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 		"callback": orderResp.Callback,
 		"invoice":  orderResp.Invoice,
 		"status":   orderResp.Status,
-		"raw":      orderResp.RawBody,
 	})
 
 	// CRITICAL: persist partial state immediately after Paid so interrupted apply
@@ -528,6 +532,12 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 
 	serverID := orderResp.ID
+	if serverID > 0 {
+		if err := acceptNewServerID(serverID, known); err != nil {
+			resp.Diagnostics.AddError("Unexpected order id", err.Error())
+			return
+		}
+	}
 	if serverID == 0 && orderResp.Callback != "" {
 		waitResp, waitErr := r.client.WaitForCallback(ctx, orderResp.Callback, invapi.WaitOptions{
 			PollInterval: interval,
@@ -541,6 +551,10 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 			var cb invapi.CallbackContext
 			if err := json.Unmarshal(waitResp.Context, &cb); err == nil && cb.ID != "" {
 				if parsed, parseErr := strconv.Atoi(cb.ID); parseErr == nil {
+					if err := acceptNewServerID(parsed, known); err != nil {
+						resp.Diagnostics.AddError("Unexpected deploy id from callback", err.Error())
+						return
+					}
 					serverID = parsed
 				}
 			}
@@ -555,8 +569,12 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 		if waitErr != nil {
 			resp.Diagnostics.AddWarning(
 				"Deploy still in progress",
-				fmt.Sprintf("%v; order_response=%s. State kept as pending:<invoice> — re-run apply to finish (will not place a new order).", waitErr, orderResp.RawBody),
+				fmt.Sprintf("%v; callback=%q invoice=%d. State kept as pending:<invoice> — re-run apply to finish (will not place a new order).", waitErr, orderResp.Callback, orderResp.Invoice),
 			)
+			return
+		}
+		if err := acceptNewServerID(found, known); err != nil {
+			resp.Diagnostics.AddError("Unexpected new server id", err.Error())
 			return
 		}
 		serverID = found

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-17
+
+### Fixed
+
+- `hostkey_server` Create: reject server ids from order callback / `WaitForNewServerID` that were already in `eq/list` before `order_instance` (`acceptNewServerID` + known-id check on deploy_keys path)
+- Catalog verify: OS/traffic/software must be **active** in InvAPI lists (no fallback to inactive rows); cross-check `*_name` vs `*_id` when both are set
+- `ModifyPlan`: error when the provider is not configured (`api_key` / env missing) instead of skipping catalog validation
+- Import / first apply: declaring install fields (`os_name`, `traffic_plan_name`, `root_pass`, …) when state had them empty no longer triggers unintended reinstall
+- Remove dead `OrderInstanceRequest.Extra` from InvAPI client (order fields are typed; `extra_order_params` stays closed in schema)
+
+### Changed
+
+- README RU/EN: Timeweb-style quick start; dedicated/GPU details in `docs/resources/server.md`; import/troubleshooting link to Registry docs
+- `docs/index.md`: provider schema and troubleshooting (no duplicate resource index — Registry sidebar)
+- `docs/resources/server.md`: import notes, dedicated example, compact GPU/vGPU section (removed duplicate HCL blocks)
+- `docs/data-sources/presets.md`, `traffic_plans.md`: disk-count hints; traffic example without hardcoded preset id
+- `examples/README.md`: Registry is published; local dev path clarified
+- Plan warnings for `os_template` and `deploy_options`; order response no longer logged with raw InvAPI body
+- Acceptance tests behind `//go:build acceptance` — `go test ./...` skips paid deploy even when `TF_ACC=1` is set (`make testacc` / `-tags=acceptance`)
+- Sanitize public ids in tests and docs; `.gitignore` for `SECURITY_AUDIT*.md` and `acc-*.log`; `CONTRIBUTING.md`
+
+## [0.1.2] - 2026-08-14
+
+### Fixed
+
+- CI: `gofmt` on `validators_common.go`; unused assignment in `catalog_resolve_test.go`
+
 ## [0.1.1] - 2026-08-14
 
 ### Added
@@ -35,6 +62,6 @@ First public release (tag `v0.1.0`) after GitHub + Registry setup.
 - Provider `hostkey` for Hostkey InvAPI (`RU` / `COM`)
 - Resources: `hostkey_server`, `hostkey_server_ip`, `hostkey_ssh_key`, `hostkey_dns_domain`, `hostkey_dns_record`
 - Data sources: presets, preset, oses, traffic_plans, software, ssh_keys, dns_domains
-- Server: catalog name → id resolve, tags, hostname, power, reboot trigger, reinstall, cancellation
+- Server: catalog name → id resolve, tags, hostname, power, reboot, reinstall, cancellation
 - Provider knobs: `http_timeout`, `max_retries`; env aliases `HOSTKEY_API_TOKEN`, `HOSTKEY_API_URL`
 - GoReleaser + GitHub Actions (CI / Release)

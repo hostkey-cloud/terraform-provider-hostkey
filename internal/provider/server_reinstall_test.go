@@ -45,4 +45,19 @@ func TestNeedsReinstall(t *testing.T) {
 	if needsReinstall(presetOnly, statePreset) {
 		t.Fatal("preset change is replace, not reinstall")
 	}
+
+	imported := base
+	importedState := serverModel{
+		OSName: types.StringNull(),
+		OSID:   types.Int64Null(),
+	}
+	if needsReinstall(imported, importedState) {
+		t.Fatal("imported server with null install fields must not reinstall on first apply")
+	}
+
+	importedPass := base
+	importedPassState := serverModel{RootPass: types.StringNull()}
+	if needsReinstall(importedPass, importedPassState) {
+		t.Fatal("root_pass on imported server must not reinstall when state had no password")
+	}
 }

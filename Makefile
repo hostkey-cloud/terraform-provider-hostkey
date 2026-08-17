@@ -11,10 +11,10 @@ install:
 	go install -ldflags "-X main.version=$(VERSION)"
 
 test:
-	go test ./...
+	go test ./... -count=1 -timeout 5m
 
 testacc:
-	TF_ACC=1 go test ./internal/provider -v -count=1 -timeout 120m -run TestAcc
+	go test -tags=acceptance ./internal/provider -v -count=1 -timeout 180m -run TestAcc
 
 fmt:
 	go fmt ./...

@@ -7,11 +7,16 @@ description: |-
 
 # hostkey_preset (Data Source)
 
-Reads one preset (`presets/show`).
+Reads one preset (`presets/show`). Preset ids differ by account and catalog — resolve from [`hostkey_presets`](presets.md) first.
 
 ```hcl
+data "hostkey_presets" "pico" {
+  location = "NL"
+  name     = "vm.pico"
+}
+
 data "hostkey_preset" "pico" {
-  id = 108
+  id = data.hostkey_presets.pico.presets[0].id
 }
 ```
 

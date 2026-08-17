@@ -1,44 +1,50 @@
 # Hostkey | Terraform Provider
 
-Terraform позволяет управлять инфраструктурой [Hostkey](https://hostkey.ru/) (VPS, dedicated, GPU, vGPU) через [InvAPI](https://hostkey.ru/documentation/apidocs/api_index/) с помощью конфигурации HCL и планов изменений.
+[![Terraform Registry](https://img.shields.io/badge/registry-hostkey--cloud%2Fhostkey-623CE4)](https://registry.terraform.io/providers/hostkey-cloud/hostkey/latest)
 
-English version: [README.en.md](README.en.md).
+Terraform-провайдер для [Hostkey](https://hostkey.ru/): VPS, dedicated, GPU и DNS через [InvAPI](https://hostkey.ru/documentation/apidocs/api_index/).
 
-Подробнее о Terraform: [developer.hashicorp.com/terraform](https://developer.hashicorp.com/terraform/docs).
+English: [README.en.md](README.en.md) · Registry: [`hostkey-cloud/hostkey`](https://registry.terraform.io/providers/hostkey-cloud/hostkey/latest)
 
 ## Документация
 
-Параметры ресурсов и источников данных — в каталоге [`docs/`](docs/) (страницы для [Terraform Registry](https://registry.terraform.io/)).
+Полное описание атрибутов — в [`docs/`](docs/) (страницы [Terraform Registry](https://registry.terraform.io/providers/hostkey-cloud/hostkey/latest/docs)). Примеры: [`examples/`](examples/).
 
 ### Ресурсы
 
-* [hostkey_server](docs/resources/server.md) — заказ и управление сервером
-* [hostkey_server_ip](docs/resources/server_ip.md) — дополнительный IPv4
-* [hostkey_ssh_key](docs/resources/ssh_key.md) — SSH-ключ в хранилище аккаунта
-* [hostkey_dns_domain](docs/resources/dns_domain.md) — DNS-зона
-* [hostkey_dns_record](docs/resources/dns_record.md) — DNS-запись
+| Ресурс | Назначение |
+|--------|------------|
+| [`hostkey_server`](docs/resources/server.md) | Заказ и управление сервером (VPS, dedic, GPU, vGPU) |
+| [`hostkey_server_ip`](docs/resources/server_ip.md) | Дополнительный IPv4 на сервере |
+| [`hostkey_ssh_key`](docs/resources/ssh_key.md) | SSH-ключ в хранилище аккаунта InvAPI |
+| [`hostkey_dns_domain`](docs/resources/dns_domain.md) | DNS-зона (PowerDNS) |
+| [`hostkey_dns_record`](docs/resources/dns_record.md) | Запись в DNS-зоне |
 
 ### Источники данных
 
-* [hostkey_presets](docs/data-sources/presets.md) — список пресетов
-* [hostkey_preset](docs/data-sources/preset.md) — один пресет по id
-* [hostkey_oses](docs/data-sources/oses.md) — операционные системы
-* [hostkey_traffic_plans](docs/data-sources/traffic_plans.md) — тарифы трафика
-* [hostkey_software](docs/data-sources/software.md) — ПО маркетплейса
-* [hostkey_ssh_keys](docs/data-sources/ssh_keys.md) — SSH-ключи аккаунта
-* [hostkey_dns_domains](docs/data-sources/dns_domains.md) — DNS-домены
+| Источник | Назначение |
+|----------|------------|
+| [`hostkey_presets`](docs/data-sources/presets.md) | Список пресетов (`presets/list`) |
+| [`hostkey_preset`](docs/data-sources/preset.md) | Один пресет по id или имени |
+| [`hostkey_oses`](docs/data-sources/oses.md) | ОС для пресета или сервера |
+| [`hostkey_traffic_plans`](docs/data-sources/traffic_plans.md) | Планы трафика для локации / пресета |
+| [`hostkey_software`](docs/data-sources/software.md) | ПО маркетплейса для пресета |
+| [`hostkey_ssh_keys`](docs/data-sources/ssh_keys.md) | SSH-ключи аккаунта |
+| [`hostkey_dns_domains`](docs/data-sources/dns_domains.md) | DNS-зоны аккаунта |
 
-Примеры конфигураций: [`examples/`](examples/).
+Один ресурс `hostkey_server` покрывает весь каталог: `vm.*`, `vds.*`, `bm.*`, `gpu.*`, `vgpu.*`. Dedicated / GPU — [docs/resources/server.md](docs/resources/server.md).
+
+## Требования
+
+* [Terraform](https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli) **>= 1.0**
+* API-ключ **аккаунта** InvAPI (тип `Any`): [документация](https://hostkey.ru/documentation/account/api_key_account/)
+* Заказ сервера — **платный**; deploy может занять до ~90 минут
 
 ## Быстрый старт
 
-### 1. Установите Terraform
+### 1. Конфигурация
 
-По [официальной инструкции](https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli). Нужна версия **>= 1.0**.
-
-### 2. Создайте конфигурацию
-
-Каталог, например `hostkey-terraform`, файл `main.tf`:
+Создайте каталог проекта и файл `main.tf`:
 
 ```hcl
 terraform {
@@ -52,7 +58,31 @@ terraform {
 }
 
 provider "hostkey" {
-  region = "RU" # или COM — биллинг/API (.ru / .com), не дата-центр
+  region = var.hostkey_region
+  # api_key — из HOSTKEY_API_KEY (см. ниже) или явно: api_key = var.hostkey_api_key
+}
+
+variable "hostkey_region" {
+  type        = string
+  description = "InvAPI endpoint: RU (.ru) или COM (.com). Не путать с location_name (ДЦ)."
+  default     = "RU"
+}
+
+variable "root_pass" {
+  type        = string
+  sensitive   = true
+  description = "Root-пароль (8–30 символов; см. docs/resources/server.md)."
+}
+
+# Сверьте имена в каталоге перед заказом (read-only, бесплатно):
+data "hostkey_presets" "pico" {
+  location = "NL"
+  name     = "vm.pico"
+}
+
+data "hostkey_traffic_plans" "vm" {
+  location    = "NL"
+  instance_id = data.hostkey_presets.pico.presets[0].id
 }
 
 resource "hostkey_server" "web" {
@@ -62,40 +92,38 @@ resource "hostkey_server" "web" {
   traffic_plan_name = "3 TB / 1 Gbps VM"
   deploy_period     = "monthly"
   root_pass         = var.root_pass
+  power_state       = "on"
+
+  # Для destroy: 0 — в конце периода, 1 — немедленно (если разрешено аккаунтом)
+  cancellation_type   = 1
+  cancellation_reason = "terraform"
+
+  timeouts {
+    create = "90m"
+    delete = "30m"
+  }
 }
 
-# Dedicated — catalog name is bm.v2-promo (not "v2-promo"):
-# resource "hostkey_server" "dedic" {
-#   preset_name       = "bm.v2-promo"
-#   location_name     = "NL"
-#   os_name           = "Ubuntu 22.04"
-#   traffic_plan_name = "1Gbps unmetered (10000 P)"
-#   deploy_period     = "monthly"
-#   root_pass         = var.root_pass
-#   # RAID type empty on this promo — omit disk_mirror
-#   no_lvm            = true
-#   ipv6_block        = true
-# }
+output "server_id" {
+  value = hostkey_server.web.id
+}
 
-# GPU dedic — gpu.v2-a5000, gpu.v3-4090t, … / VDS GPU — vgpu.v2-a4000
-# resource "hostkey_server" "gpu" {
-#   preset_name       = "gpu.v2-a5000"
-#   location_name     = "NL"
-#   os_name           = "Ubuntu 22.04"
-#   traffic_plan_name = "1Gbps unmetered"
-#   deploy_period     = "monthly"
-#   root_pass         = var.root_pass
-# }
+output "main_ipv4" {
+  value = hostkey_server.web.main_ipv4
+}
 ```
 
-Тот же `hostkey_server` для VPS (`vm.*`), dedic (`bm.*`), GPU (`gpu.*`) и vGPU (`vgpu.*`). Тарифы трафика **разные** — смотрите [`traffic_plans/list`](https://hostkey.ru/documentation/apidocs/traffic_plans/#traffic_planslist). Заказ сервера — [`eq/order_instance`](https://hostkey.ru/documentation/apidocs/eq/#order_instance). У dedic часто два плана с одним `name` и разной `price` — используйте подсказки как в панели (`- FREE`, `(10000 P)`) или `traffic_plan_id`. Для GPU смотрите планы с `instance_id` пресета. Подробнее: [docs/resources/server.md](docs/resources/server.md).
+Скопируйте [`examples/basic/terraform.tfvars.example`](examples/basic/terraform.tfvars.example) → `terraform.tfvars` (файл в `.gitignore`, **не коммитить**):
 
-Для локальной разработки без Registry: `go install` и [dev_overrides](examples/dev-terraform.rc) — см. [CONTRIBUTING.md](CONTRIBUTING.md).
+```hcl
+root_pass = "StrongPass1%"
+```
 
-### 3. API-ключ
+### 2. API-ключ
 
-Создайте ключ в [InvAPI](https://invapi.hostkey.ru): **Имя пользователя → API ключи** (ключ на весь аккаунт, `Any`).  
-([инструкция Hostkey](https://hostkey.ru/documentation/account/api_key_account/)).
+InvAPI → **Имя пользователя → API ключи**: [hostkey.ru](https://hostkey.ru/documentation/account/api_key_account/) · [invapi.hostkey.ru](https://invapi.hostkey.ru).
+
+**Способ 1 — переменная окружения (рекомендуется):**
 
 ```powershell
 $env:HOSTKEY_API_KEY = "ваш-ключ"
@@ -105,47 +133,70 @@ $env:HOSTKEY_API_KEY = "ваш-ключ"
 export HOSTKEY_API_KEY="your-key"
 ```
 
-Либо в конфигурации:
+**Способ 2 — в провайдере** (добавьте variable и `terraform.tfvars`):
 
 ```hcl
+variable "hostkey_api_key" {
+  type      = string
+  sensitive = true
+}
+
 provider "hostkey" {
-  region  = "RU"
+  region  = var.hostkey_region
   api_key = var.hostkey_api_key
 }
 ```
 
-Также принимаются `HOSTKEY_API_TOKEN` (алиас ключа) и `HOSTKEY_BASE_URL` / `HOSTKEY_API_URL` (базовый URL InvAPI).
+Алиасы env: `HOSTKEY_API_TOKEN`. Переопределение URL: `HOSTKEY_BASE_URL` / `HOSTKEY_API_URL`.
 
-**Важно:** `region` выбирает endpoint InvAPI (`.ru` / `.com`). Дата-центр задаётся в ресурсе как `location_name` (например `NL`, `RU`).
-
-### 4. Plan / Apply / Destroy
+### 3. Init, validate, plan, apply
 
 ```bash
 terraform init
+terraform validate   # Success! The configuration is valid.
 terraform plan
 terraform apply
+```
+
+Terraform покажет план изменений и запросит подтверждение — введите **`yes`** и Enter.
+
+Заказ **платный**. Создание сервера — асинхронное (обычно десятки минут, timeout по умолчанию 90m).
+
+### 4. Destroy
+
+```bash
 terraform destroy
 ```
 
-Заказ сервера **платный**. Deploy может занять от десятков минут до полутора часов.  
-`destroy` вызывает отмену услуги (`whmcs/request_cancellation`). Тип отмены можно задать через `cancellation_type` / `cancellation_reason` у `hostkey_server`.
+Снова подтвердите **`yes`**. Вызывается `whmcs/request_cancellation` с `cancellation_type` / `cancellation_reason` из ресурса.
 
-## Аутентификация
+## Особенности Hostkey (InvAPI)
 
-| Способ | Описание |
-|--------|----------|
-| `HOSTKEY_API_KEY` или `HOSTKEY_API_TOKEN` | Рекомендуется |
-| `provider.api_key` | Явно в HCL (лучше через переменную, не в git) |
+* **`region`** (провайдер) — endpoint API (`invapi.hostkey.ru` / `.com`), default в схеме — `COM`. **`location_name`** (ресурс) — дата-центр (`NL`, `US`, `RU`, …).
+* Имена **`preset_name` / `os_name` / `traffic_plan_name`** — **точно как в InvAPI**, не как короткие подписи в панели (`bm.v2-promo`, не `v2-promo`).
+* Перед заказом: `data.hostkey_presets` + `data.hostkey_traffic_plans` с **`instance_id`** = id пресета.
+* У dedicated часто **два плана с одним `name` и разной `price`** — используйте подсказку из панели (`- FREE`, `(10000 P)`) или `traffic_plan_id`.
+* **`disk_mirror`** — только если в `presets/list` у пресета **2+ диска**; на однодисковых (в т.ч. `bm.v2-promo`) поле **не задавать**.
+* **`extra_order_params`** закрыт: любой ключ в плане = ошибка (все поля заказа типизированы).
+* BM / GPU / vGPU, RAID, IPv6, reinstall — [docs/resources/server.md](docs/resources/server.md).
 
-Провайдер обменивает ключ на сессионный токен (`auth/login`) и использует его в запросах к InvAPI.
+Локальная сборка без Registry: `go install` + [dev_overrides](examples/dev-terraform.rc) — [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Import
+
+```bash
+terraform import hostkey_server.web 12345
+```
+
+Import по числовому id InvAPI — подробнее в [Registry: hostkey_server → Import](https://registry.terraform.io/providers/hostkey-cloud/hostkey/latest/docs/resources/server#import).
+
+## Устранение неполадок
+
+См. [Registry: Troubleshooting](https://registry.terraform.io/providers/hostkey-cloud/hostkey/latest/docs#troubleshooting).
 
 ## Разработка
 
-* Участие в разработке: [CONTRIBUTING.md](CONTRIBUTING.md)
-* Безопасность: [SECURITY.md](SECURITY.md)
-* История изменений: [CHANGELOG.md](CHANGELOG.md)
-* Лицензия: [MPL-2.0](LICENSE)
-
-## License
-
-MPL-2.0
+* [CONTRIBUTING.md](CONTRIBUTING.md)
+* [SECURITY.md](SECURITY.md)
+* [CHANGELOG.md](CHANGELOG.md)
+* Лицензия [MPL-2.0](LICENSE)

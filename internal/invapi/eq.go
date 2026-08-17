@@ -237,7 +237,9 @@ func (c *Client) WaitForNewServerID(ctx context.Context, known map[int]struct{},
 					var cb CallbackContext
 					if json.Unmarshal(check.Context, &cb) == nil && cb.ID != "" {
 						if id, err := strconv.Atoi(cb.ID); err == nil {
-							return id, nil
+							if _, existed := known[id]; !existed {
+								return id, nil
+							}
 						}
 					}
 				}

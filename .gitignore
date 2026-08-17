@@ -59,7 +59,12 @@ credentials.json
 *.asc
 hostkey-gpg-*.asc
 
-# Logs / temp
+# Internal security / audit notes (keep local; do not publish)
+SECURITY_AUDIT.md
+SECURITY_AUDIT*.md
+
+# Local acceptance / smoke logs
+acc-*.log
 *.log
 *.tmp
 tmp/

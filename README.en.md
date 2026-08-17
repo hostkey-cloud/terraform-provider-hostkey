@@ -1,44 +1,50 @@
 # Hostkey | Terraform Provider
 
-Manage [Hostkey](https://hostkey.com/) infrastructure (VPS, dedicated, GPU, vGPU) through [InvAPI](https://hostkey.com/documentation/apidocs/api_index/) using HCL and Terraform plans.
+[![Terraform Registry](https://img.shields.io/badge/registry-hostkey--cloud%2Fhostkey-623CE4)](https://registry.terraform.io/providers/hostkey-cloud/hostkey/latest)
 
-Русская версия: [README.md](README.md).
+Terraform provider for [Hostkey](https://hostkey.com/): VPS, dedicated, GPU, and DNS via [InvAPI](https://hostkey.com/documentation/apidocs/api_index/).
 
-More about Terraform: [developer.hashicorp.com/terraform](https://developer.hashicorp.com/terraform/docs).
+Русский: [README.md](README.md) · Registry: [`hostkey-cloud/hostkey`](https://registry.terraform.io/providers/hostkey-cloud/hostkey/latest)
 
 ## Documentation
 
-Resource and data source reference lives under [`docs/`](docs/) (Terraform Registry pages).
+Full attribute reference is under [`docs/`](docs/) ([Terraform Registry](https://registry.terraform.io/providers/hostkey-cloud/hostkey/latest/docs)). Examples: [`examples/`](examples/).
 
 ### Resources
 
-* [hostkey_server](docs/resources/server.md) — order and manage a server
-* [hostkey_server_ip](docs/resources/server_ip.md) — additional IPv4
-* [hostkey_ssh_key](docs/resources/ssh_key.md) — SSH key in account storage
-* [hostkey_dns_domain](docs/resources/dns_domain.md) — DNS zone
-* [hostkey_dns_record](docs/resources/dns_record.md) — DNS record
+| Resource | Purpose |
+|----------|---------|
+| [`hostkey_server`](docs/resources/server.md) | Order and manage a server (VPS, dedic, GPU, vGPU) |
+| [`hostkey_server_ip`](docs/resources/server_ip.md) | Extra IPv4 on a server |
+| [`hostkey_ssh_key`](docs/resources/ssh_key.md) | SSH public key in InvAPI account storage |
+| [`hostkey_dns_domain`](docs/resources/dns_domain.md) | DNS zone (PowerDNS) |
+| [`hostkey_dns_record`](docs/resources/dns_record.md) | Record in a DNS zone |
 
 ### Data sources
 
-* [hostkey_presets](docs/data-sources/presets.md) — preset list
-* [hostkey_preset](docs/data-sources/preset.md) — single preset by id
-* [hostkey_oses](docs/data-sources/oses.md) — operating systems
-* [hostkey_traffic_plans](docs/data-sources/traffic_plans.md) — traffic plans
-* [hostkey_software](docs/data-sources/software.md) — marketplace software
-* [hostkey_ssh_keys](docs/data-sources/ssh_keys.md) — account SSH keys
-* [hostkey_dns_domains](docs/data-sources/dns_domains.md) — DNS domains
+| Data source | Purpose |
+|-------------|---------|
+| [`hostkey_presets`](docs/data-sources/presets.md) | Preset list (`presets/list`) |
+| [`hostkey_preset`](docs/data-sources/preset.md) | Single preset by id or name |
+| [`hostkey_oses`](docs/data-sources/oses.md) | OS images for a preset or server |
+| [`hostkey_traffic_plans`](docs/data-sources/traffic_plans.md) | Traffic plans for a location / preset |
+| [`hostkey_software`](docs/data-sources/software.md) | Marketplace software for a preset |
+| [`hostkey_ssh_keys`](docs/data-sources/ssh_keys.md) | Account SSH keys |
+| [`hostkey_dns_domains`](docs/data-sources/dns_domains.md) | Account DNS zones |
 
-Examples: [`examples/`](examples/).
+One `hostkey_server` resource covers the whole catalog: `vm.*`, `vds.*`, `bm.*`, `gpu.*`, `vgpu.*`. Dedicated / GPU — [docs/resources/server.md](docs/resources/server.md).
+
+## Requirements
+
+* [Terraform](https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli) **>= 1.0**
+* Account-wide InvAPI API key (`Any`): [documentation](https://hostkey.com/documentation/account/api_key_account/)
+* Server orders are **billed**; deploy may take up to ~90 minutes
 
 ## Quick start
 
-### 1. Install Terraform
+### 1. Configuration
 
-Follow the [official install guide](https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli). Requires **Terraform >= 1.0**.
-
-### 2. Create a configuration
-
-For example, directory `hostkey-terraform` with `main.tf`:
+Create a project directory and `main.tf`:
 
 ```hcl
 terraform {
@@ -52,7 +58,31 @@ terraform {
 }
 
 provider "hostkey" {
-  region = "RU" # or COM — billing/API endpoint (.ru / .com), not the DC
+  region = var.hostkey_region
+  # api_key from HOSTKEY_API_KEY (below) or explicitly: api_key = var.hostkey_api_key
+}
+
+variable "hostkey_region" {
+  type        = string
+  description = "InvAPI endpoint: COM (.com) or RU (.ru). Not the same as location_name (DC)."
+  default     = "COM"
+}
+
+variable "root_pass" {
+  type        = string
+  sensitive   = true
+  description = "Root password (8–30 chars; see docs/resources/server.md)."
+}
+
+# Confirm catalog names before ordering (read-only, free):
+data "hostkey_presets" "pico" {
+  location = "NL"
+  name     = "vm.pico"
+}
+
+data "hostkey_traffic_plans" "vm" {
+  location    = "NL"
+  instance_id = data.hostkey_presets.pico.presets[0].id
 }
 
 resource "hostkey_server" "web" {
@@ -62,40 +92,38 @@ resource "hostkey_server" "web" {
   traffic_plan_name = "3 TB / 1 Gbps VM"
   deploy_period     = "monthly"
   root_pass         = var.root_pass
+  power_state       = "on"
+
+  # On destroy: 0 = end of billing period, 1 = immediate (when allowed)
+  cancellation_type   = 1
+  cancellation_reason = "terraform"
+
+  timeouts {
+    create = "90m"
+    delete = "30m"
+  }
 }
 
-# Dedicated — catalog name is bm.v2-promo (not "v2-promo"):
-# resource "hostkey_server" "dedic" {
-#   preset_name       = "bm.v2-promo"
-#   location_name     = "NL"
-#   os_name           = "Ubuntu 22.04"
-#   traffic_plan_name = "1Gbps unmetered (10000 P)"
-#   deploy_period     = "monthly"
-#   root_pass         = var.root_pass
-#   # RAID type empty on this promo — omit disk_mirror
-#   no_lvm            = true
-#   ipv6_block        = true
-# }
+output "server_id" {
+  value = hostkey_server.web.id
+}
 
-# GPU dedic — gpu.v2-a5000, gpu.v3-4090t, … / VDS GPU — vgpu.v2-a4000
-# resource "hostkey_server" "gpu" {
-#   preset_name       = "gpu.v2-a5000"
-#   location_name     = "NL"
-#   os_name           = "Ubuntu 22.04"
-#   traffic_plan_name = "1Gbps unmetered"
-#   deploy_period     = "monthly"
-#   root_pass         = var.root_pass
-# }
+output "main_ipv4" {
+  value = hostkey_server.web.main_ipv4
+}
 ```
 
-The same `hostkey_server` resource covers VPS (`vm.*`), dedicated (`bm.*`), GPU (`gpu.*`), and vGPU (`vgpu.*`). Traffic plan names **differ** — see [`traffic_plans/list`](https://hostkey.com/documentation/apidocs/traffic_plans/#traffic_planslist). Server orders use [`eq/order_instance`](https://hostkey.com/documentation/apidocs/eq/#order_instance). Dedicated catalogs often expose duplicate InvAPI names with different prices — use panel-style hints (`- FREE`, `(10000 P)`) or `traffic_plan_id`. For GPU, list plans with `instance_id` set to the preset id. Confirm via `data.hostkey_traffic_plans` / `data.hostkey_presets`. See [docs/resources/server.md](docs/resources/server.md).
+Copy [`examples/basic/terraform.tfvars.example`](examples/basic/terraform.tfvars.example) → `terraform.tfvars` (gitignored, **do not commit**):
 
-For local development without the Registry: `go install` and [dev_overrides](examples/dev-terraform.rc) — see [CONTRIBUTING.md](CONTRIBUTING.md).
+```hcl
+root_pass = "StrongPass1%"
+```
 
-### 3. API key
+### 2. API key
 
-Create a key in [InvAPI](https://invapi.hostkey.com): **Username → API keys** (account-wide key, `Any`).  
-([Hostkey guide](https://hostkey.com/documentation/account/api_key_account/)).
+InvAPI → **Username → API keys**: [hostkey.com](https://hostkey.com/documentation/account/api_key_account/) · [invapi.hostkey.com](https://invapi.hostkey.com).
+
+**Option 1 — environment variable (recommended):**
 
 ```bash
 export HOSTKEY_API_KEY="your-key"
@@ -105,47 +133,70 @@ export HOSTKEY_API_KEY="your-key"
 $env:HOSTKEY_API_KEY = "your-key"
 ```
 
-Or in configuration:
+**Option 2 — provider block** (add a variable and `terraform.tfvars`):
 
 ```hcl
+variable "hostkey_api_key" {
+  type      = string
+  sensitive = true
+}
+
 provider "hostkey" {
-  region  = "RU"
+  region  = var.hostkey_region
   api_key = var.hostkey_api_key
 }
 ```
 
-Aliases: `HOSTKEY_API_TOKEN` for the key; `HOSTKEY_BASE_URL` / `HOSTKEY_API_URL` for the InvAPI base URL.
+Env aliases: `HOSTKEY_API_TOKEN`. URL override: `HOSTKEY_BASE_URL` / `HOSTKEY_API_URL`.
 
-**Note:** `region` selects the InvAPI endpoint (`.ru` / `.com`). The data center is `location_name` on the resource (for example `NL`, `RU`).
-
-### 4. Plan / Apply / Destroy
+### 3. Init, validate, plan, apply
 
 ```bash
 terraform init
+terraform validate   # Success! The configuration is valid.
 terraform plan
 terraform apply
+```
+
+Terraform prints the plan and asks for confirmation — type **`yes`** and press Enter.
+
+Orders are **billed**. Deploy is asynchronous (often tens of minutes; default create timeout 90m).
+
+### 4. Destroy
+
+```bash
 terraform destroy
 ```
 
-Ordering a server is **billed**. Deploy can take from tens of minutes up to about 90 minutes.  
-`destroy` requests service cancellation (`whmcs/request_cancellation`). Optional `cancellation_type` / `cancellation_reason` on `hostkey_server` control cancel behaviour.
+Confirm with **`yes`**. Calls `whmcs/request_cancellation` using `cancellation_type` / `cancellation_reason` on the resource.
 
-## Authentication
+## Hostkey specifics (InvAPI)
 
-| Method | Notes |
-|--------|--------|
-| `HOSTKEY_API_KEY` or `HOSTKEY_API_TOKEN` | Preferred |
-| `provider.api_key` | Explicit in HCL (use a variable; do not commit secrets) |
+* Provider **`region`** selects the API endpoint (`invapi.hostkey.com` / `.ru`); schema default is **`COM`**. Resource **`location_name`** is the data center (`NL`, `US`, `RU`, …).
+* **`preset_name` / `os_name` / `traffic_plan_name`** must match **InvAPI** exactly, not short panel labels (`bm.v2-promo`, not `v2-promo`).
+* Before ordering: `data.hostkey_presets` + `data.hostkey_traffic_plans` with **`instance_id`** = preset id.
+* Dedicated catalogs often have **two rows with the same `name` and different `price`** — use a panel hint (`- FREE`, `(10000 P)`) or `traffic_plan_id`.
+* Set **`disk_mirror`** only when `presets/list` shows **2+ disks** for the preset; omit on single-disk presets (including `bm.v2-promo`).
+* **`extra_order_params`** is closed: any key fails plan validation (order fields are typed attributes).
+* BM / GPU / vGPU, RAID, IPv6, reinstall — [docs/resources/server.md](docs/resources/server.md).
 
-The provider exchanges the account key for a short-lived session token (`auth/login`) and attaches it to InvAPI calls.
+Local build without the Registry: `go install` + [dev_overrides](examples/dev-terraform.rc) — [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Import
+
+```bash
+terraform import hostkey_server.web 12345
+```
+
+Import by numeric InvAPI id — see [Registry: hostkey_server → Import](https://registry.terraform.io/providers/hostkey-cloud/hostkey/latest/docs/resources/server#import).
+
+## Troubleshooting
+
+See [Registry: Troubleshooting](https://registry.terraform.io/providers/hostkey-cloud/hostkey/latest/docs#troubleshooting).
 
 ## Development
 
-* Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
-* Security: [SECURITY.md](SECURITY.md)
-* Changelog: [CHANGELOG.md](CHANGELOG.md)
-* License: [MPL-2.0](LICENSE)
-
-## License
-
-MPL-2.0
+* [CONTRIBUTING.md](CONTRIBUTING.md)
+* [SECURITY.md](SECURITY.md)
+* [CHANGELOG.md](CHANGELOG.md)
+* License [MPL-2.0](LICENSE)

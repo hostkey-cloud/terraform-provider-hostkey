@@ -16,65 +16,87 @@ const defaultUpdateTimeout = 90 * time.Minute
 // needsReinstall is true when install-time fields change on an existing server.
 // InvAPI reinstall: eq/order_instance with id=<server> and without preset.
 func needsReinstall(plan, state serverModel) bool {
-	if stringAttrChanged(plan.OSName, state.OSName) {
+	if installStringChanged(plan.OSName, state.OSName) {
 		return true
 	}
-	if intAttrChanged(plan.OSID, state.OSID) {
+	if installIntChanged(plan.OSID, state.OSID) {
 		return true
 	}
-	if stringAttrChanged(plan.SoftName, state.SoftName) {
+	if installStringChanged(plan.SoftName, state.SoftName) {
 		return true
 	}
-	if intAttrChanged(plan.SoftID, state.SoftID) {
+	if installIntChanged(plan.SoftID, state.SoftID) {
 		return true
 	}
-	if stringAttrChanged(plan.RootPass, state.RootPass) {
+	if rootPassChanged(plan.RootPass, state.RootPass) {
 		return true
 	}
-	if stringAttrChanged(plan.SSHKey, state.SSHKey) {
+	if installStringChanged(plan.SSHKey, state.SSHKey) {
 		return true
 	}
-	if stringAttrChanged(plan.PostInstallScript, state.PostInstallScript) {
+	if installStringChanged(plan.PostInstallScript, state.PostInstallScript) {
 		return true
 	}
-	if stringAttrChanged(plan.OSTemplate, state.OSTemplate) {
+	if installStringChanged(plan.OSTemplate, state.OSTemplate) {
 		return true
 	}
-	if boolAttrChanged(plan.OwnOS, state.OwnOS) {
+	if installBoolChanged(plan.OwnOS, state.OwnOS) {
 		return true
 	}
-	if intAttrChanged(plan.RootSize, state.RootSize) {
+	if installIntChanged(plan.RootSize, state.RootSize) {
 		return true
 	}
-	if stringAttrChanged(plan.DiskMirror, state.DiskMirror) {
+	if installStringChanged(plan.DiskMirror, state.DiskMirror) {
 		return true
 	}
-	if boolAttrChanged(plan.NoLVM, state.NoLVM) {
+	if installBoolChanged(plan.NoLVM, state.NoLVM) {
 		return true
 	}
-	if stringAttrChanged(plan.ReinstallTrigger, state.ReinstallTrigger) &&
-		!plan.ReinstallTrigger.IsNull() && plan.ReinstallTrigger.ValueString() != "" {
+	if !plan.ReinstallTrigger.IsNull() && !plan.ReinstallTrigger.IsUnknown() &&
+		plan.ReinstallTrigger.ValueString() != "" &&
+		!plan.ReinstallTrigger.Equal(state.ReinstallTrigger) {
 		return true
 	}
 	return false
 }
 
-func stringAttrChanged(plan, state types.String) bool {
-	if plan.IsUnknown() {
+// install*Changed ignore plan-vs-null state (import / first apply) so catalog fields
+// declared in HCL do not trigger an unintended reinstall.
+func installStringChanged(plan, state types.String) bool {
+	if plan.IsUnknown() || plan.IsNull() {
+		return false
+	}
+	if state.IsNull() || state.IsUnknown() {
 		return false
 	}
 	return !plan.Equal(state)
 }
 
-func intAttrChanged(plan, state types.Int64) bool {
-	if plan.IsUnknown() {
+func installIntChanged(plan, state types.Int64) bool {
+	if plan.IsUnknown() || plan.IsNull() {
+		return false
+	}
+	if state.IsNull() || state.IsUnknown() {
 		return false
 	}
 	return !plan.Equal(state)
 }
 
-func boolAttrChanged(plan, state types.Bool) bool {
-	if plan.IsUnknown() {
+func installBoolChanged(plan, state types.Bool) bool {
+	if plan.IsUnknown() || plan.IsNull() {
+		return false
+	}
+	if state.IsNull() || state.IsUnknown() {
+		return false
+	}
+	return !plan.Equal(state)
+}
+
+func rootPassChanged(plan, state types.String) bool {
+	if plan.IsUnknown() || plan.IsNull() || plan.ValueString() == "" {
+		return false
+	}
+	if state.IsNull() || state.IsUnknown() || state.ValueString() == "" {
 		return false
 	}
 	return !plan.Equal(state)

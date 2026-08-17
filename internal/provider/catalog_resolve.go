@@ -122,9 +122,7 @@ func resolveTrafficPlanID(ctx context.Context, client *invapi.Client, location s
 		items = append(items, trafficNamedID{ID: p.ID, Name: p.Name, Price: p.Price})
 	}
 	if len(items) == 0 {
-		for _, p := range list.TrafficPlans {
-			items = append(items, trafficNamedID{ID: p.ID, Name: p.Name, Price: p.Price})
-		}
+		return 0, fmt.Errorf("no active traffic plans for preset in location %s", location)
 	}
 	return matchTrafficPlan(name, items)
 }
@@ -208,9 +206,6 @@ func filterActiveNamedIDs(items []namedID, active []int) []namedID {
 		if active[i] != 0 {
 			out = append(out, it)
 		}
-	}
-	if len(out) == 0 {
-		return items
 	}
 	return out
 }

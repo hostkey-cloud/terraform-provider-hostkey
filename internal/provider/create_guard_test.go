@@ -21,12 +21,26 @@ func TestValidateRootPass(t *testing.T) {
 }
 
 func TestPendingID(t *testing.T) {
-	id := pendingID(995884)
-	if id != "pending:995884" {
+	const invoice = 123456
+	id := pendingID(invoice)
+	if id != "pending:123456" {
 		t.Fatalf("got %s", id)
 	}
 	n, ok := parsePendingInvoice(id)
-	if !ok || n != 995884 {
+	if !ok || n != invoice {
 		t.Fatalf("parse failed: %d %v", n, ok)
+	}
+}
+
+func TestAcceptNewServerID(t *testing.T) {
+	known := map[int]struct{}{100: {}, 200: {}}
+	if err := acceptNewServerID(300, known); err != nil {
+		t.Fatalf("new id: %v", err)
+	}
+	if err := acceptNewServerID(100, known); err == nil {
+		t.Fatal("expected error for pre-existing id")
+	}
+	if err := acceptNewServerID(0, known); err == nil {
+		t.Fatal("expected error for zero id")
 	}
 }

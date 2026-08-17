@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 )
 
 // LoginResponse covers both public auth/login shapes:
@@ -73,43 +72,7 @@ type OrderInstanceRequest struct {
 	CustomDomain      string
 	OSTemplate        string
 	DeployOptions     string
-	ServerID          int               // non-zero => reinstall existing server
-	Extra             map[string]string // optional InvAPI form fields not covered by typed fields
-}
-
-// reservedOrderExtraKeys must never be supplied via Extra (typed fields or provider-managed).
-var reservedOrderExtraKeys = map[string]struct{}{
-	"action":              {},
-	"token":               {},
-	"id":                  {},
-	"preset":              {},
-	"root_pass":           {},
-	"price":               {},
-	"location_name":       {},
-	"os_id":               {},
-	"soft_id":             {},
-	"traffic_plan":        {},
-	"hostname":            {},
-	"ssh_key":             {},
-	"post_install_script": {},
-	"deploy_period":       {},
-	"deploy_notify":       {},
-	"own_os":              {},
-	"root_size":           {},
-	"disk_mirror":         {},
-	"no_lvm":              {},
-	"ipv6":                {},
-	"ipv4_amount":         {},
-	"vlan":                {},
-	"private_vlan":        {},
-	"custom_domain":       {},
-	"os_template":         {},
-	"deploy_options":      {},
-}
-
-func IsReservedOrderExtraKey(key string) bool {
-	_, ok := reservedOrderExtraKeys[strings.ToLower(strings.TrimSpace(key))]
-	return ok
+	ServerID          int // non-zero => reinstall existing server
 }
 
 type OrderInstanceResponse struct {
@@ -243,6 +206,7 @@ type Preset struct {
 	HDD         FlexString `json:"hdd"`
 	Virtual     int        `json:"virtual"`
 	ServerType  string     `json:"server_type"`
+	Active      int        `json:"active"`
 }
 
 // Dedicated is true for Instant Dedicated / GPU hardware (virtual=0 in presets/list).

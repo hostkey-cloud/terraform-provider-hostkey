@@ -27,17 +27,19 @@ Useful Make targets: `make test`, `make build`, `make install`, `make lint`, `ma
 
 ## Tests
 
-- Unit: `go test ./...` (no API key).
+- Unit: `go test ./...` or `make test` (does **not** run acceptance tests).
 - Smoke: `HOSTKEY_API_KEY=… go run ./cmd/smoke` (read-only InvAPI).
 - Acceptance (billed, production InvAPI):
 
 ```bash
 export TF_ACC=1
 export HOSTKEY_API_KEY=…
-go test ./internal/provider -v -timeout 120m -run TestAcc
+go test -tags=acceptance ./internal/provider -v -timeout 180m -run TestAcc
+# or: make testacc
 ```
 
 DNS acceptance needs `HOSTKEY_ACC_DNS_DOMAIN`. Do not point tests at servers you must not destroy.
+
 
 ## Release
 
@@ -48,6 +50,8 @@ Tag `v*` (e.g. `v0.1.1`) and push it. [`.github/workflows/release.yml`](.github/
 - Keep diffs focused; match existing style.
 - Update `docs/` and README when changing user-facing schema.
 - Do not commit secrets, state, or personal account IDs.
+- Do not commit `SECURITY_AUDIT.md`, GPG key files (`*.asc`), acceptance logs (`acc-*.log`), or local scripts under `scripts/` (gitignored).
+- Acceptance tests must not hardcode production server ids you must not mutate (e.g. personal dev servers).
 - CI must pass (`gofmt`, `vet`, lint, unit tests).
 
 ## Scope

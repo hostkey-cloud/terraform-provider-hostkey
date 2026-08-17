@@ -17,6 +17,8 @@ Names are the InvAPI `name` field, not the panel short label. Prefixes:
 - `gpu.*` — dedicated GPU (`gpu.v2-a5000`, `gpu.v3-4090t`, …)
 - `vgpu.*` — VDS with GPU
 
+Each preset includes `id`, `name`, `description`, `locations`. Use `description` and HDD fields from [hostkey_preset](preset.md) / InvAPI `presets/list` to infer disk count before setting `disk_mirror` on [hostkey_server](../resources/server.md) (RAID needs 2+ disks in catalog).
+
 ```hcl
 data "hostkey_presets" "nl" {
   location = "NL"
@@ -38,4 +40,4 @@ data "hostkey_presets" "gpu" {
 
 ### Read-Only
 
-- `presets` — list of objects with `id`, `name`, `description`, `locations`.
+- `presets` — list of objects with `id`, `name`, `description`, `locations`. Disk layout hints (`hdd`, description) affect whether `disk_mirror` is valid on order — see [hostkey_server](../resources/server.md).

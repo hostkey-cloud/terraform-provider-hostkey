@@ -15,8 +15,8 @@ import (
 //
 //	set HOSTKEY_API_KEY=your-key
 //	go run ./cmd/smoke
-//	go run ./cmd/smoke -preset 108
-//	go run ./cmd/smoke -server 32645
+//	go run ./cmd/smoke -preset <id-from-presets-list>
+//	go run ./cmd/smoke -server <your-server-id>
 //	go run ./cmd/smoke -base-url https://invapi-stage.hostkey.com/
 func main() {
 	var (

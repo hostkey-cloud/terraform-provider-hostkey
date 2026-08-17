@@ -57,6 +57,22 @@ func validateServerPlan(_ context.Context, plan, _ serverModel, isCreate bool) d
 		}
 	}
 
+	if !plan.OSTemplate.IsNull() && strings.TrimSpace(plan.OSTemplate.ValueString()) != "" {
+		diags.AddAttributeWarning(
+			path.Root("os_template"),
+			"Custom OS template",
+			"os_template uses InvAPI's custom install path; os_name/os_id catalog checks may not apply.",
+		)
+	}
+
+	if !plan.DeployOptions.IsNull() && strings.TrimSpace(plan.DeployOptions.ValueString()) != "" {
+		diags.AddAttributeWarning(
+			path.Root("deploy_options"),
+			"Opaque deploy_options",
+			"deploy_options is forwarded to InvAPI as-is; invalid values fail at order/reinstall time.",
+		)
+	}
+
 	if !plan.PowerOffHard.IsNull() && plan.PowerOffHard.ValueBool() {
 		ps := strings.ToLower(strings.TrimSpace(plan.PowerState.ValueString()))
 		if ps != "" && ps != "off" {

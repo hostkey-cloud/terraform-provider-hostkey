@@ -72,6 +72,17 @@ func setPrivateKnownIDs(ctx context.Context, priv privateData, known map[int]str
 	return nil
 }
 
+// acceptNewServerID rejects ids that were already in eq/list before order_instance.
+func acceptNewServerID(id int, known map[int]struct{}) error {
+	if id <= 0 {
+		return fmt.Errorf("invalid server id %d", id)
+	}
+	if _, existed := known[id]; existed {
+		return fmt.Errorf("server id %d was already in eq/list before order (not a new deploy)", id)
+	}
+	return nil
+}
+
 func getPrivateKnownIDs(ctx context.Context, priv privateData) (map[int]struct{}, diag.Diagnostics) {
 	out := map[int]struct{}{}
 	var diags diag.Diagnostics

@@ -10,8 +10,9 @@ import (
 )
 
 func TestDecodePresetRequiresIDMatch(t *testing.T) {
+	const wantMismatch = 42
 	list, _ := json.Marshal([]presetDetail{{ID: 99, Name: "other"}})
-	_, err := decodePreset(nil, list, 108)
+	_, err := decodePreset(nil, list, wantMismatch)
 	if err == nil {
 		t.Fatal("expected error when single list row is not wantID")
 	}
@@ -22,7 +23,7 @@ func TestDecodePresetRequiresIDMatch(t *testing.T) {
 	}
 
 	single, _ := json.Marshal(presetDetail{ID: 1, Name: "wrong"})
-	_, err = decodePreset(single, nil, 108)
+	_, err = decodePreset(single, nil, wantMismatch)
 	if err == nil {
 		t.Fatal("expected error when single object id does not match")
 	}
@@ -44,8 +45,8 @@ func TestFilterActiveNamedIDs(t *testing.T) {
 		t.Fatalf("got %+v", out)
 	}
 	allZero := filterActiveNamedIDs(items, []int{0, 0})
-	if len(allZero) != 2 {
-		t.Fatalf("fallback to full list: %+v", allZero)
+	if len(allZero) != 0 {
+		t.Fatalf("expected empty when all inactive: %+v", allZero)
 	}
 }
 

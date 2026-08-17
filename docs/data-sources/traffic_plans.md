@@ -28,10 +28,15 @@ data "hostkey_traffic_plans" "nl" {
   location = "NL"
 }
 
-# Plans compatible with a dedicated preset (pass preset id from presets/list):
+# Plans compatible with a dedicated preset (instance_id = preset id from hostkey_presets):
+data "hostkey_presets" "promo" {
+  location = "NL"
+  name     = "bm.v2-promo"
+}
+
 data "hostkey_traffic_plans" "for_dedic" {
   location    = "NL"
-  instance_id = 243 # e.g. bm.v2-promo; GPU: gpu.v2-a5000 id from presets/list
+  instance_id = data.hostkey_presets.promo.presets[0].id
   name        = "1Gbps"
 }
 ```
