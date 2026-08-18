@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- CI: acc helpers in `provider_test.go` are behind `//go:build acceptance` (same as `acc_test.go`) so `unused` lint does not fail default `golangci-lint`
+
 ### Added
 
 - README RU/EN and Registry troubleshooting: install via Yandex Cloud public Terraform provider mirror when `registry.terraform.io` is blocked (`terraform-mirror.yandexcloud.net`; no Yandex Cloud account)
