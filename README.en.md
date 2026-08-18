@@ -149,7 +149,25 @@ provider "hostkey" {
 
 Env aliases: `HOSTKEY_API_TOKEN`. URL override: `HOSTKEY_BASE_URL` / `HOSTKEY_API_URL`.
 
-### 3. Init, validate, plan, apply
+### 3. If `registry.terraform.io` is blocked
+
+Use the public Yandex Cloud mirror (no Yandex Cloud account). `source` stays `hostkey-cloud/hostkey`. CLI file: `~/.terraformrc` (Linux/macOS) or `%APPDATA%\terraform.rc` (Windows):
+
+```hcl
+provider_installation {
+  network_mirror {
+    url     = "https://terraform-mirror.yandexcloud.net/"
+    include = ["registry.terraform.io/*/*"]
+  }
+  direct {
+    exclude = ["registry.terraform.io/*/*"]
+  }
+}
+```
+
+Then `terraform init -upgrade`. Details (RU): [README.md](README.md).
+
+### 4. Init, validate, plan, apply
 
 ```bash
 terraform init
@@ -162,7 +180,7 @@ Terraform prints the plan and asks for confirmation — type **`yes`** and press
 
 Orders are **billed**. Deploy is asynchronous (often tens of minutes; default create timeout 90m).
 
-### 4. Destroy
+### 5. Destroy
 
 ```bash
 terraform destroy

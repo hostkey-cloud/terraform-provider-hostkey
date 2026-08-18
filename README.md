@@ -149,7 +149,30 @@ provider "hostkey" {
 
 Алиасы env: `HOSTKEY_API_TOKEN`. Переопределение URL: `HOSTKEY_BASE_URL` / `HOSTKEY_API_URL`.
 
-### 3. Init, validate, plan, apply
+### 3. Если `registry.terraform.io` недоступен (RU)
+
+HashiCorp блокирует часть сетей. Провайдер тот же: `source = "hostkey-cloud/hostkey"`. Аккаунт в Yandex Cloud **не нужен**.
+
+Создайте файл CLI Terraform:
+
+- Linux / macOS: `~/.terraformrc`
+- Windows: `%APPDATA%\terraform.rc`
+
+```hcl
+provider_installation {
+  network_mirror {
+    url     = "https://terraform-mirror.yandexcloud.net/"
+    include = ["registry.terraform.io/*/*"]
+  }
+  direct {
+    exclude = ["registry.terraform.io/*/*"]
+  }
+}
+```
+
+Затем `terraform init -upgrade`. Если рядом стоит `dev_overrides` на локальный бинарник — для проверки Registry его уберите.
+
+### 4. Init, validate, plan, apply
 
 ```bash
 terraform init
@@ -162,7 +185,7 @@ Terraform покажет план изменений и запросит под�
 
 Заказ **платный**. Создание сервера — асинхронное (обычно десятки минут, timeout по умолчанию 90m).
 
-### 4. Destroy
+### 5. Destroy
 
 ```bash
 terraform destroy

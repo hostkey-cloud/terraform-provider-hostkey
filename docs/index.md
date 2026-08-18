@@ -48,4 +48,4 @@ provider "hostkey" {
 | `Catalog verification failed` | Run `terraform plan` with a configured provider; confirm preset/OS/traffic ids via data sources |
 | Ambiguous `traffic_plan_name` | List plans with [hostkey_traffic_plans](data-sources/traffic_plans.md) and `instance_id`; use `(10000 P)` / `- FREE` hints or `traffic_plan_id` |
 | `pending:<invoice>` id | Deploy still running; re-run `apply` — the provider resumes the same order, it does not re-order |
-| Reinstall after import | Declaring install fields on import does not reinstall until those fields differ from state; use [reinstall_trigger](resources/server.md) to force reinstall |
+| `Failed to query available provider packages` / cannot reach `registry.terraform.io` | Configure the public Yandex Cloud network mirror in `~/.terraformrc` / `%APPDATA%\terraform.rc` (`https://terraform-mirror.yandexcloud.net/`). `source` stays `hostkey-cloud/hostkey`. See [README (RU)](https://github.com/hostkey-cloud/terraform-provider-hostkey/blob/main/README.md). |
