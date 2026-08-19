@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	pendingIDPrefix    = "pending:"
-	privateKnownKey    = "known_server_ids"
-	privateCallbackKey = "order_callback"
+	pendingIDPrefix             = "pending:"
+	privateKnownKey             = "known_server_ids"
+	privateCallbackKey          = "order_callback"
 	privateReinstallCallbackKey = "reinstall_callback"
 )
 

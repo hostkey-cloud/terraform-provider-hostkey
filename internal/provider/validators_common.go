@@ -34,9 +34,9 @@ const (
 	// Install-time fields forwarded to InvAPI as-is for bare-metal reinstall.
 	// These caps avoid unbounded client-side payload sizes (DoS / accidental huge scripts),
 	// while staying generous enough for real-world options strings.
-	maxOSTemplateLen         = 1024
-	maxDeployOptionsLen      = 8192
-	maxPostInstallScriptLen  = 32768
+	maxOSTemplateLen        = 1024
+	maxDeployOptionsLen     = 8192
+	maxPostInstallScriptLen = 32768
 )
 
 var (
