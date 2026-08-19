@@ -2,6 +2,7 @@ package invapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -178,6 +179,20 @@ func TestLookupPendingServer_NotReady(t *testing.T) {
 	}
 }
 
+func TestCallbackServerID_UsesContextOrScopeID(t *testing.T) {
+	if got := CallbackServerID(&CallbackCheckResponse{
+		Context: json.RawMessage(`{"id":"12345","ip":"1.2.3.4"}`),
+	}); got != 12345 {
+		t.Fatalf("context id: got %d", got)
+	}
+
+	if got := CallbackServerID(&CallbackCheckResponse{
+		Scope: json.RawMessage(`{"id":67890,"location":"RU"}`),
+	}); got != 67890 {
+		t.Fatalf("scope id: got %d", got)
+	}
+}
+
 func TestWaitForPendingServer_FallsBackToSingleNewListID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -199,6 +214,41 @@ func TestWaitForPendingServer_FallsBackToSingleNewListID(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}, 20: {}}, "", WaitOptions{
+		PollInterval: 10 * time.Millisecond,
+		Timeout:      2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != 101 {
+		t.Fatalf("id=%d want 101", id)
+	}
+}
+
+func TestWaitForPendingServer_SingleNewListIDDoesNotRequireHostnameMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "update_servers":
+			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":{"603548":"cb-ours"}}`)
+		case strings.Contains(r.URL.Path, "eq_callback.php"):
+			_, _ = io.WriteString(w, `{"result":"OK","scope":"pending","context":{"id":"","ip":""}}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "list":
+			_, _ = io.WriteString(w, `{"result":"OK","servers":[10,20,101]}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "show":
+			// Simulate a panel response that does not include hostname yet.
+			_, _ = io.WriteString(w, `{"result":"OK","server_data":{}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{BaseURL: srv.URL + "/", HTTPClient: srv.Client(), MaxRetries: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}, 20: {}}, "tf-pending-timeout-20260819-1709", WaitOptions{
 		PollInterval: 10 * time.Millisecond,
 		Timeout:      2 * time.Second,
 	})
@@ -243,5 +293,74 @@ func TestWaitForPendingServer_HostnameDisambiguatesMultipleNewIDs(t *testing.T) 
 	}
 	if id != 102 {
 		t.Fatalf("id=%d want 102", id)
+	}
+}
+
+func TestWaitForPendingServer_NoCallbackFallsBackByHostname(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "update_servers":
+			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":[]}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "list":
+			_, _ = io.WriteString(w, `{"result":"OK","servers":[10,101]}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "show" && r.Form.Get("id") == "101":
+			_, _ = io.WriteString(w, `{"result":"OK","server_data":{"hostname":"tf-pending-fix-20260819-1425"}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{BaseURL: srv.URL + "/", HTTPClient: srv.Client(), MaxRetries: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}}, "tf-pending-fix-20260819-1425", WaitOptions{
+		PollInterval: 10 * time.Millisecond,
+		Timeout:      2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != 101 {
+		t.Fatalf("id=%d want 101", id)
+	}
+}
+
+func TestWaitForPendingServer_NoCallbackUsesUpdateServersListFirst(t *testing.T) {
+	var listHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "update_servers":
+			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":[],"servers":[10,101]}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "show" && r.Form.Get("id") == "101":
+			_, _ = io.WriteString(w, `{"result":"OK","server_data":{"hostname":"tf-pending-fix-20260819-1504"}}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "list":
+			listHits.Add(1)
+			_, _ = io.WriteString(w, `{"result":"OK","servers":[10]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{BaseURL: srv.URL + "/", HTTPClient: srv.Client(), MaxRetries: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}}, "tf-pending-fix-20260819-1504", WaitOptions{
+		PollInterval: 10 * time.Millisecond,
+		Timeout:      2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != 101 {
+		t.Fatalf("id=%d want 101", id)
+	}
+	if listHits.Load() != 0 {
+		t.Fatalf("eq/list should not be needed when update_servers already exposes the new server, hits=%d", listHits.Load())
 	}
 }

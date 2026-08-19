@@ -7,11 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-19
+
+### Fixed
+
+- `hostkey_server` Create: when `eq/list` / `eq/update_servers` exposes exactly one new server id after the pre-order snapshot, apply now links it immediately and does not wait for `eq/show` hostname fields to appear. This fixes a case where the server was already created/active but Terraform kept printing `Still creating...`.
+
+### Added
+
+- Example: `examples/resources/hostkey_server_pending_resume/` for reproducing and verifying pending-create resume/link behavior during local testing.
+
 ## [0.1.5] - 2026-08-19
 
 ### Fixed
 
-- `hostkey_server` Create: when an invoice callback exists but never returns a server id, apply can now finish via a safe `eq/list` fallback (single new server id, or hostname disambiguation) instead of waiting forever after the server is already running.
+- `hostkey_server` Create: pending deploy no longer waits forever when the server is already active but callback data is incomplete or missing. Apply can now finish via a safe `eq/list` fallback with hostname disambiguation, without blindly adopting unrelated servers.
 
 ## [0.1.4] - 2026-08-19
 

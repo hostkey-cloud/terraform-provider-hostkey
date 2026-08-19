@@ -78,25 +78,19 @@ func showHostname(show *ServerShowResponse) string {
 	return ""
 }
 
-func (c *Client) matchPendingListID(ctx context.Context, known map[int]struct{}, wantHostname string) (int, error) {
-	list, listErr := c.EQList(ctx, nil)
-	if listErr != nil {
-		return 0, listErr
-	}
-	ids, idErr := list.IDs()
-	if idErr != nil {
-		return 0, idErr
-	}
-
+func (c *Client) matchPendingIDs(ctx context.Context, known map[int]struct{}, ids []int, wantHostname string) (int, error) {
 	newcomers := newcomerIDs(known, ids)
+	wantHostname = strings.TrimSpace(wantHostname)
 	switch len(newcomers) {
 	case 0:
 		return 0, ErrPendingNotReady
 	case 1:
+		// A single newcomer after the pre-order snapshot is already safely
+		// disambiguated. Do not require eq/show hostname matching here because
+		// some panels lag or omit hostname fields even after the server exists.
 		return newcomers[0], nil
 	}
 
-	wantHostname = strings.TrimSpace(wantHostname)
 	if wantHostname == "" {
 		return 0, fmt.Errorf("multiple new server ids %v; need invoice callback or hostname match to disambiguate", newcomers)
 	}
@@ -121,6 +115,18 @@ func (c *Client) matchPendingListID(ctx context.Context, known map[int]struct{},
 	}
 }
 
+func (c *Client) matchPendingListID(ctx context.Context, known map[int]struct{}, wantHostname string) (int, error) {
+	list, listErr := c.EQList(ctx, nil)
+	if listErr != nil {
+		return 0, listErr
+	}
+	ids, idErr := list.IDs()
+	if idErr != nil {
+		return 0, idErr
+	}
+	return c.matchPendingIDs(ctx, known, ids, wantHostname)
+}
+
 // LookupPendingServer is one poll for the server created by this invoice (and optional callback).
 // When invoice > 0 it prefers deploy_keys/callback, but can safely fall back to
 // eq/list when there is a single new server id or a hostname match disambiguates.
@@ -135,6 +141,18 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 			return 0, "", updErr
 		}
 		callback = DeployKeyForInvoice(upd.DeployKeysMap(), invoice)
+		if callback == "" && strings.TrimSpace(wantHostname) != "" {
+			ids, idErr := upd.IDs()
+			if idErr == nil {
+				sid, matchErr := c.matchPendingIDs(ctx, known, ids, wantHostname)
+				if matchErr == nil {
+					return sid, "", nil
+				}
+				if !errors.Is(matchErr, ErrPendingNotReady) {
+					// Keep going to eq/list fallback below; update_servers may lag or have a different shape.
+				}
+			}
+		}
 	}
 	if callback != "" {
 		check, cbErr := c.CallbackCheck(ctx, callback)
@@ -161,7 +179,14 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 		return sid, callback, nil
 	}
 	if invoice > 0 {
-		return 0, "", ErrPendingNotReady
+		if strings.TrimSpace(wantHostname) == "" {
+			return 0, "", ErrPendingNotReady
+		}
+		sid, listErr := c.matchPendingListID(ctx, known, wantHostname)
+		if listErr != nil {
+			return 0, "", listErr
+		}
+		return sid, "", nil
 	}
 
 	sid, matchErr := c.matchPendingListID(ctx, known, "")

@@ -130,16 +130,16 @@ type ServerSummary struct {
 	Location string `json:"location"`
 }
 
-func (r *ServerListResponse) IDs() ([]int, error) {
-	if len(r.Servers) == 0 || string(r.Servers) == "null" {
+func parseServerIDs(raw json.RawMessage) ([]int, error) {
+	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}
 	var asInts []int
-	if err := json.Unmarshal(r.Servers, &asInts); err == nil {
+	if err := json.Unmarshal(raw, &asInts); err == nil {
 		return asInts, nil
 	}
 	var asObjs []ServerSummary
-	if err := json.Unmarshal(r.Servers, &asObjs); err == nil {
+	if err := json.Unmarshal(raw, &asObjs); err == nil {
 		ids := make([]int, 0, len(asObjs))
 		for _, s := range asObjs {
 			ids = append(ids, s.ID)
@@ -147,7 +147,7 @@ func (r *ServerListResponse) IDs() ([]int, error) {
 		return ids, nil
 	}
 	var asStrs []string
-	if err := json.Unmarshal(r.Servers, &asStrs); err == nil {
+	if err := json.Unmarshal(raw, &asStrs); err == nil {
 		ids := make([]int, 0, len(asStrs))
 		for _, s := range asStrs {
 			n, err := strconv.Atoi(s)
@@ -158,7 +158,11 @@ func (r *ServerListResponse) IDs() ([]int, error) {
 		}
 		return ids, nil
 	}
-	return nil, fmt.Errorf("unsupported servers payload: %s", truncate([]byte(r.Servers), 256))
+	return nil, fmt.Errorf("unsupported servers payload: %s", truncate([]byte(raw), 256))
+}
+
+func (r *ServerListResponse) IDs() ([]int, error) {
+	return parseServerIDs(r.Servers)
 }
 
 type UpdateServersResponse struct {
@@ -166,6 +170,13 @@ type UpdateServersResponse struct {
 	Servers        json.RawMessage `json:"servers"`
 	BillingServers []BillingServer `json:"billing_servers"`
 	DeployKeysRaw  json.RawMessage `json:"deploy_keys"`
+}
+
+func (r *UpdateServersResponse) IDs() ([]int, error) {
+	if r == nil {
+		return nil, nil
+	}
+	return parseServerIDs(r.Servers)
 }
 
 // DeployKeysMap normalizes deploy_keys which InvAPI may return as object map or empty array.

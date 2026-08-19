@@ -75,20 +75,48 @@ func (c *Client) WaitForCallback(ctx context.Context, key string, opts WaitOptio
 	}
 }
 
+func callbackObjectID(raw json.RawMessage) int {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return 0
+	}
+	v, ok := obj["id"]
+	if !ok {
+		return 0
+	}
+	switch id := v.(type) {
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(id))
+		if err != nil || n <= 0 {
+			return 0
+		}
+		return n
+	case float64:
+		n := int(id)
+		if n <= 0 {
+			return 0
+		}
+		return n
+	default:
+		return 0
+	}
+}
+
 // CallbackServerID extracts InvAPI server id from eq_callback/check context, or 0.
 func CallbackServerID(check *CallbackCheckResponse) int {
-	if check == nil || len(check.Context) == 0 {
+	if check == nil {
 		return 0
 	}
-	var cb CallbackContext
-	if json.Unmarshal(check.Context, &cb) != nil || cb.ID == "" {
-		return 0
+	if sid := callbackObjectID(check.Context); sid > 0 {
+		return sid
 	}
-	id, err := strconv.Atoi(cb.ID)
-	if err != nil || id <= 0 {
-		return 0
+	if sid := callbackObjectID(check.Scope); sid > 0 {
+		return sid
 	}
-	return id
+	return 0
 }
 
 func callbackTerminal(check *CallbackCheckResponse) (bool, error) {
