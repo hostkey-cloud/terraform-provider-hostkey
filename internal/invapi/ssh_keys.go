@@ -55,7 +55,7 @@ func (c *Client) SSHKeyGet(ctx context.Context, id int) (*SSHKey, error) {
 			return &keys[i], nil
 		}
 	}
-	return nil, fmt.Errorf("ssh_keys: key id %d not found", id)
+	return nil, fmt.Errorf("ssh_keys: key id %d: %w", id, ErrNotFound)
 }
 
 // SSHKeyAdd stores a public key in InvAPI SSH key storage.

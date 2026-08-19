@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -72,6 +73,22 @@ func (c *Client) WaitForCallback(ctx context.Context, key string, opts WaitOptio
 		case <-ticker.C:
 		}
 	}
+}
+
+// CallbackServerID extracts InvAPI server id from eq_callback/check context, or 0.
+func CallbackServerID(check *CallbackCheckResponse) int {
+	if check == nil || len(check.Context) == 0 {
+		return 0
+	}
+	var cb CallbackContext
+	if json.Unmarshal(check.Context, &cb) != nil || cb.ID == "" {
+		return 0
+	}
+	id, err := strconv.Atoi(cb.ID)
+	if err != nil || id <= 0 {
+		return 0
+	}
+	return id
 }
 
 func callbackTerminal(check *CallbackCheckResponse) (bool, error) {

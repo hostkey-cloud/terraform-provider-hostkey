@@ -1,6 +1,12 @@
 package provider
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
+)
 
 func TestValidateRootPass(t *testing.T) {
 	if err := validateRootPass("87GxtAkn5R+"); err != nil {
@@ -42,5 +48,42 @@ func TestAcceptNewServerID(t *testing.T) {
 	}
 	if err := acceptNewServerID(0, known); err == nil {
 		t.Fatal("expected error for zero id")
+	}
+}
+
+func TestSnapshotKnownIDs(t *testing.T) {
+	_, err := snapshotKnownIDs(nil)
+	if err == nil {
+		t.Fatal("nil list should error")
+	}
+	list := &invapi.ServerListResponse{Servers: []byte(`[10,20]`)}
+	known, err := snapshotKnownIDs(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := known[10]; !ok {
+		t.Fatal("missing 10")
+	}
+	empty := &invapi.ServerListResponse{Servers: []byte(`[]`)}
+	known, err = snapshotKnownIDs(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(known) != 0 {
+		t.Fatalf("empty list: %#v", known)
+	}
+}
+
+func TestPendingInvoiceFromState(t *testing.T) {
+	n, ok := pendingInvoiceFromState(serverModel{ID: types.StringValue("pending:603548")})
+	if !ok || n != 603548 {
+		t.Fatalf("id field: %d %v", n, ok)
+	}
+	n, ok = pendingInvoiceFromState(serverModel{
+		ID:      types.StringValue("pending:x"),
+		Invoice: types.Int64Value(99),
+	})
+	if !ok || n != 99 {
+		t.Fatalf("invoice field: %d %v", n, ok)
 	}
 }

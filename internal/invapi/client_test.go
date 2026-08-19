@@ -66,6 +66,48 @@ func TestPostForm_Retries500(t *testing.T) {
 	}
 }
 
+func TestPostForm_NoRetryOrderInstance(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, "bad gateway")
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(Config{
+		BaseURL:    srv.URL + "/",
+		MaxRetries: 4,
+		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.PostFormWithoutAuth(context.Background(), "eq", url.Values{
+		"action":    {"order_instance"},
+		"root_pass": {"Secret1+"},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("order_instance must not retry on 502, hits=%d", hits.Load())
+	}
+}
+
+func TestIsNonRetryableForm(t *testing.T) {
+	if !isNonRetryableForm("eq", url.Values{"action": {"order_instance"}}) {
+		t.Fatal("order_instance")
+	}
+	if isNonRetryableForm("eq", url.Values{"action": {"show"}}) {
+		t.Fatal("show is retryable")
+	}
+	if isNonRetryableForm("pdns", url.Values{"action": {"delete_dns"}}) {
+		t.Fatal("pdns delete is retryable")
+	}
+}
+
 func TestPostForm_SetsUserAgent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("User-Agent") != "terraform-provider-hostkey/test" {
@@ -143,6 +185,55 @@ func TestIsAuthFailure(t *testing.T) {
 	}
 	if !isAuthFailure(200, &APIError{Message: "Invalid token"}) {
 		t.Fatal("message")
+	}
+}
+
+func TestCheckRedirect_BlocksCrossOrigin(t *testing.T) {
+	evilHits := atomic.Int32{}
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		evilHits.Add(1)
+		_, _ = io.WriteString(w, `{"result":"OK"}`)
+	}))
+	defer evil.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evil.URL+"/steal", http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(Config{
+		BaseURL:    srv.URL + "/",
+		MaxRetries: 1,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.PostFormWithoutAuth(context.Background(), "eq", url.Values{"action": {"show"}})
+	if err == nil || !strings.Contains(err.Error(), "cross-origin redirect") {
+		t.Fatalf("expected cross-origin redirect error, got %v", err)
+	}
+	if evilHits.Load() != 0 {
+		t.Fatal("POST body must not follow 307 to another origin")
+	}
+}
+
+func TestLogin_IgnoresForeignInvapi(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"token":"sess","invapi":"https://evil.example/"}`)
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(Config{BaseURL: srv.URL + "/", MaxRetries: 1, HTTPClient: srv.Client()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := NewTokenManager("key", 3600, client)
+	client.SetAuth(auth)
+	if _, err := auth.Token(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := client.BaseURL(); !strings.HasPrefix(got, srv.URL) {
+		t.Fatalf("baseURL rewritten to %q", got)
 	}
 }
 

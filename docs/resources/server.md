@@ -21,7 +21,9 @@ One resource covers the whole catalog. There is no separate GPU/VDS type:
 
 Always pair the preset with a traffic plan for that **preset id** (`instance_id` in [hostkey_traffic_plans](../data-sources/traffic_plans.md)). GPU dedic often uses unmetered-style plans; vGPU often uses dedic-style names (`1Gbps 50TB - FREE`). Confirm names and prices in the catalog.
 
-Changing OS / software / `root_pass` / `ssh_key` (or `reinstall_trigger`) **reinstalls the same server id** — disk is wiped. Changes to preset, location, traffic plan or billing period force **replace** (new order).
+Changing OS / software / `root_pass` / `ssh_key` (or `reinstall_trigger`) **reinstalls the same server id** — disk is wiped. Reinstall sends only install fields (`os_id`, software, `root_pass`, SSH key, RAID/LVM, scripts) — not location, traffic plan, extra IPv4, or VLAN. Changes to preset, location, traffic plan or billing period force **replace** (new order).
+
+When you set only `os_name`, `soft_name`, or `traffic_plan_name`, the provider resolves the matching `*_id` at plan time (you do not need to set both). If an existing server needs reinstall, `terraform plan` still shows **update in-place**, but emits a **warning** that the disk will be wiped — treat that like a destructive change, not a tag update.
 
 ## Example Usage
 
@@ -110,15 +112,16 @@ Same resource and attributes as VPS/dedicated — change **`preset_name`** and p
 ### Optional
 
 - `preset_name` / `preset_id` — catalog preset (name preferred): `vm.*`, `vds.*`, `bm.*`, `gpu.*`, `vgpu.*`. Change forces replace.
-- `os_name` / `os_id` — OS. Change triggers reinstall.
-- `soft_name` / `soft_id` — marketplace software. Change triggers reinstall.
-- `traffic_plan_name` / `traffic_plan_id` — traffic plan for that preset (VM vs dedic names differ; dedic often needs `- FREE` / `(NNNN P)` hints or an id). Change forces replace.
+- `os_name` / `os_id` — OS. Setting `os_name` alone updates `os_id` at plan time. Change triggers reinstall.
+- `soft_name` / `soft_id` — marketplace software. Setting `soft_name` alone updates `soft_id` at plan time. Change triggers reinstall.
+- `traffic_plan_name` / `traffic_plan_id` — traffic plan for that preset (VM vs dedic names differ; dedic often needs `- FREE` / `(NNNN P)` hints or an id). Setting `traffic_plan_name` alone updates `traffic_plan_id` at plan time. Change forces replace.
 - `hostname` — server hostname (rename via InvAPI).
 - `ssh_key` — public key for deploy/reinstall. Change triggers reinstall.
-- `post_install_script`, `own_os`, `root_size`, `disk_mirror`, `no_lvm`, `os_template` — install / disk options for bare metal (`bm.*`, `gpu.*`); changes trigger reinstall.
+- `post_install_script`, `own_os`, `root_size`, `disk_mirror`, `no_lvm`, `os_template` — install / disk options for bare metal (`bm.*`, `gpu.*`); changes trigger reinstall. `post_install_script` max 32768 chars; `os_template` max 1024 chars.
 - `deploy_period` — `hourly`, `monthly`, `quarterly`, `semi-annually`, `annually`. Forces replace.
 - `deploy_notify` — email when deploy finishes.
-- `ipv4_amount`, `ipv6_block`, `vlan`, `private_vlan`, `custom_domain`, `deploy_options`, `extra_order_params` — order-time options (mostly force replace). `extra_order_params` is **closed** (any key fails plan validation; use typed attributes instead). `deploy_options` and `os_template` are forwarded as-is — invalid values fail at order/reinstall time. `ipv6_block`: dedicated catalog `virtual=0` and location **NL or US**. InvAPI does not expose a per-preset IPv6 checkbox — set it only when the panel shows it.
+- `ipv4_amount`, `ipv6_block`, `vlan`, `private_vlan`, `custom_domain`, `deploy_options`, `extra_order_params` — order-time options (mostly force replace). `extra_order_params` is **closed** (any key fails plan validation; use typed attributes instead). `deploy_options` max 8192 chars; `deploy_options` and `os_template` are forwarded as-is — invalid values fail at order/reinstall time. `ipv6_block`: dedicated catalog `virtual=0` and location **NL or US**. InvAPI does not expose a per-preset IPv6 checkbox — set it only when the panel shows it.
+- `ipv4_amount > 1` emits a plan warning because extra IPv4 addresses may be billed.
 - `tags` (Map of String) — user tags only (Hostkey system tags are not synced back).
 - `power_state` — `on` / `off`. Omit to leave power unmanaged.
 - `power_off_hard` — use `eq/hard_off` when turning off.
@@ -131,7 +134,7 @@ Same resource and attributes as VPS/dedicated — change **`preset_name`** and p
 
 ### Read-Only
 
-- `id` — InvAPI server id, or `pending:<invoice>` while deploy is in progress.
+- `id` — InvAPI server id. After a Paid order, state may be `pending:<invoice>` until apply links the real id (plan shows an in-place update; apply waits, it does not re-order).
 - `main_ipv4` — primary IPv4 after deploy.
 - `status` — last known status.
 - `invoice` — WHMCS invoice id after Paid.
@@ -156,5 +159,6 @@ To avoid surprise drift, either:
 ## Notes
 
 - `root_pass` is stored in Terraform state (sensitive).
+- If create wait is interrupted (network/DNS), state stays `pending:<invoice>`. The next apply **waits for that invoice** via `eq/update_servers` `deploy_keys` / callback — it does not place a new order and does not adopt a sibling server. `terraform plan` is not a no-op while pending.
 - Pending create only resumes this resource's own `pending:<invoice>` — foreign Pending orders are never adopted.
 - RAID / disk layout: [Hostkey RAID docs](https://hostkey.com/documentation/technical/exist_server_using/raid_create/) ([RU](https://hostkey.ru/documentation/technical/exist_server_using/raid_create/)).

@@ -29,7 +29,7 @@ resource "hostkey_ssh_key" "deploy" {
 
 ### Optional
 
-- `default` (Boolean) Make this the account default key.
+ - `default` (Boolean) Make this the account default key. Plan emits a warning because future server deploys that rely on the account default key may install it automatically.
 
 ### Read-Only
 

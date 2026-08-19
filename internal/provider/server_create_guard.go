@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	pendingIDPrefix = "pending:"
-	privateKnownKey = "known_server_ids"
+	pendingIDPrefix    = "pending:"
+	privateKnownKey    = "known_server_ids"
+	privateCallbackKey = "order_callback"
+	privateReinstallCallbackKey = "reinstall_callback"
 )
 
 type privateData interface {
@@ -41,19 +43,19 @@ func parsePendingInvoice(id string) (int, bool) {
 	return n, true
 }
 
-func listKnownIDs(list *invapi.ServerListResponse) map[int]struct{} {
-	known := map[int]struct{}{}
+func snapshotKnownIDs(list *invapi.ServerListResponse) (map[int]struct{}, error) {
 	if list == nil {
-		return known
+		return nil, fmt.Errorf("eq/list returned no payload")
 	}
 	ids, err := list.IDs()
 	if err != nil {
-		return known
+		return nil, err
 	}
+	known := make(map[int]struct{}, len(ids))
 	for _, id := range ids {
 		known[id] = struct{}{}
 	}
-	return known
+	return known, nil
 }
 
 func setPrivateKnownIDs(ctx context.Context, priv privateData, known map[int]struct{}) error {
@@ -103,4 +105,69 @@ func getPrivateKnownIDs(ctx context.Context, priv privateData) (map[int]struct{}
 		out[id] = struct{}{}
 	}
 	return out, diags
+}
+
+func setPrivateCallback(ctx context.Context, priv privateData, callback string) error {
+	callback = strings.TrimSpace(callback)
+	if priv == nil || callback == "" {
+		return nil
+	}
+	diags := priv.SetKey(ctx, privateCallbackKey, []byte(callback))
+	if diags.HasError() {
+		return fmt.Errorf("set private callback: %s", diags[0].Detail())
+	}
+	return nil
+}
+
+func getPrivateCallback(ctx context.Context, priv privateData) string {
+	if priv == nil {
+		return ""
+	}
+	val, diags := priv.GetKey(ctx, privateCallbackKey)
+	if diags.HasError() || len(val) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(string(val))
+}
+
+func setPrivateReinstallCallback(ctx context.Context, priv privateData, callback string) error {
+	callback = strings.TrimSpace(callback)
+	if priv == nil || callback == "" {
+		// Keep semantics: empty callback means "not in progress".
+		if priv == nil {
+			return nil
+		}
+		// Store empty bytes to make getPrivateReinstallCallback() return "".
+		diags := priv.SetKey(ctx, privateReinstallCallbackKey, []byte{})
+		if diags.HasError() {
+			return fmt.Errorf("set private reinstall callback: %s", diags[0].Detail())
+		}
+		return nil
+	}
+	diags := priv.SetKey(ctx, privateReinstallCallbackKey, []byte(callback))
+	if diags.HasError() {
+		return fmt.Errorf("set private reinstall callback: %s", diags[0].Detail())
+	}
+	return nil
+}
+
+func getPrivateReinstallCallback(ctx context.Context, priv privateData) string {
+	if priv == nil {
+		return ""
+	}
+	val, diags := priv.GetKey(ctx, privateReinstallCallbackKey)
+	if diags.HasError() || len(val) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(string(val))
+}
+
+func pendingInvoiceFromState(state serverModel) (int, bool) {
+	if n, ok := parsePendingInvoice(state.ID.ValueString()); ok {
+		return n, true
+	}
+	if !state.Invoice.IsNull() && !state.Invoice.IsUnknown() && state.Invoice.ValueInt64() > 0 {
+		return int(state.Invoice.ValueInt64()), true
+	}
+	return 0, false
 }

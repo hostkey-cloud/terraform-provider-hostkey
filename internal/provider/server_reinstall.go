@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -60,6 +61,17 @@ func needsReinstall(plan, state serverModel) bool {
 	return false
 }
 
+type reinstallInProgressError struct {
+	callback string
+	cause    error
+}
+
+func (e reinstallInProgressError) Error() string {
+	return fmt.Sprintf("reinstall callback wait failed (callback=%q): %v", e.callback, e.cause)
+}
+
+func (e reinstallInProgressError) Unwrap() error { return e.cause }
+
 // install*Changed ignore plan-vs-null state (import / first apply) so catalog fields
 // declared in HCL do not trigger an unintended reinstall.
 func installStringChanged(plan, state types.String) bool {
@@ -103,13 +115,45 @@ func rootPassChanged(plan, state types.String) bool {
 }
 
 func buildReinstallRequest(plan serverModel, serverID int) invapi.OrderInstanceRequest {
-	req := buildOrderRequest(plan)
-	req.ServerID = serverID
-	req.Preset = "" // must not send preset on reinstall
+	// Reinstall is eq/order_instance with id=<server> and no preset. Do not
+	// forward create-only billing/network fields (location, traffic, extra IPv4, VLAN, IPv6).
+	req := invapi.OrderInstanceRequest{
+		ServerID: serverID,
+		RootPass: plan.RootPass.ValueString(),
+		OwnOS:    !plan.OwnOS.IsNull() && plan.OwnOS.ValueBool(),
+	}
+	if !plan.OSID.IsNull() {
+		req.OSID = int(plan.OSID.ValueInt64())
+	}
+	if !plan.SoftID.IsNull() {
+		req.SoftID = int(plan.SoftID.ValueInt64())
+	}
+	if !plan.SSHKey.IsNull() {
+		req.SSHKey = plan.SSHKey.ValueString()
+	}
+	if !plan.PostInstallScript.IsNull() {
+		req.PostInstallScript = plan.PostInstallScript.ValueString()
+	}
+	if !plan.OSTemplate.IsNull() {
+		req.OSTemplate = plan.OSTemplate.ValueString()
+	}
+	if !plan.DeployOptions.IsNull() {
+		req.DeployOptions = plan.DeployOptions.ValueString()
+	}
+	if !plan.RootSize.IsNull() {
+		req.RootSize = int(plan.RootSize.ValueInt64())
+	}
+	if !plan.DiskMirror.IsNull() && plan.DiskMirror.ValueString() != "" {
+		req.DiskMirror = strings.ToLower(strings.TrimSpace(plan.DiskMirror.ValueString()))
+	}
+	if !plan.NoLVM.IsNull() {
+		v := plan.NoLVM.ValueBool()
+		req.NoLVM = &v
+	}
 	return req
 }
 
-func (r *serverResource) applyReinstall(ctx context.Context, serverID int, plan serverModel) error {
+func (r *serverResource) applyReinstall(ctx context.Context, serverID int, plan serverModel, respPriv privateData) error {
 	if err := r.resolveOrderIDs(ctx, &plan); err != nil {
 		return fmt.Errorf("catalog resolve: %w", err)
 	}
@@ -133,7 +177,6 @@ func (r *serverResource) applyReinstall(ctx context.Context, serverID int, plan 
 		"server_id": serverID,
 		"os_id":     orderReq.OSID,
 		"soft_id":   orderReq.SoftID,
-		"location":  orderReq.LocationName,
 	})
 
 	orderResp, err := r.client.EQOrderInstance(ctx, orderReq)
@@ -142,6 +185,12 @@ func (r *serverResource) applyReinstall(ctx context.Context, serverID int, plan 
 	}
 
 	if orderResp.Callback != "" {
+		// Persist reinstall callback so a failed WaitForCallback won't trigger
+		// a second reinstall (double wipe) on the next apply.
+		if err := setPrivateReinstallCallback(ctx, respPriv, orderResp.Callback); err != nil {
+			tflog.Warn(ctx, "set private reinstall callback failed", map[string]any{"err": err.Error()})
+		}
+
 		timeout, diags := plan.Timeouts.Update(ctx, defaultUpdateTimeout)
 		if diags.HasError() {
 			timeout = defaultUpdateTimeout
@@ -151,8 +200,13 @@ func (r *serverResource) applyReinstall(ctx context.Context, serverID int, plan 
 			Timeout:      timeout,
 		})
 		if waitErr != nil {
-			return fmt.Errorf("reinstall started (callback=%s) but wait failed: %w", orderResp.Callback, waitErr)
+			return reinstallInProgressError{callback: orderResp.Callback, cause: waitErr}
 		}
+	}
+
+	// Clear callback marker (if any) on success.
+	if err := setPrivateReinstallCallback(ctx, respPriv, ""); err != nil {
+		tflog.Warn(ctx, "clear private reinstall callback failed", map[string]any{"err": err.Error()})
 	}
 
 	// Keep same id; confirm still visible.

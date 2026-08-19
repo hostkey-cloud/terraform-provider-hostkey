@@ -61,3 +61,36 @@ func TestNeedsReinstall(t *testing.T) {
 		t.Fatal("root_pass on imported server must not reinstall when state had no password")
 	}
 }
+
+func TestBuildReinstallRequestOmitsCreateFields(t *testing.T) {
+	plan := serverModel{
+		LocationName:      types.StringValue("NL"),
+		RootPass:          types.StringValue("Abcdef1%"),
+		OSID:              types.Int64Value(187),
+		SoftID:            types.Int64Value(1),
+		TrafficPlanID:     types.Int64Value(59),
+		IPv4Amount:        types.Int64Value(2),
+		VLAN:              types.Int64Value(10),
+		IPv6Block:         types.BoolValue(true),
+		DiskMirror:        types.StringValue("raid1"),
+		PresetName:        types.StringValue("bm.v2-promo"),
+		SSHKey:            types.StringValue("ssh-ed25519 AAAA"),
+		PostInstallScript: types.StringValue("echo hi"),
+	}
+	req := buildReinstallRequest(plan, 42)
+	if req.ServerID != 42 {
+		t.Fatalf("id=%d", req.ServerID)
+	}
+	if req.Preset != "" {
+		t.Fatalf("preset=%q", req.Preset)
+	}
+	if req.LocationName != "" || req.TrafficPlan != 0 || req.IPv4Amount != 0 || req.VLAN != 0 || req.IPv6Block != nil {
+		t.Fatalf("create-only fields leaked: %+v", req)
+	}
+	if req.OSID != 187 || req.RootPass != "Abcdef1%" || req.DiskMirror != "raid1" {
+		t.Fatalf("install fields missing: %+v", req)
+	}
+	if req.SSHKey == "" || req.PostInstallScript == "" {
+		t.Fatal("ssh/script should be sent on reinstall")
+	}
+}

@@ -9,6 +9,8 @@ description: |-
 
 Manages a DNS record in a pdns zone (`pdns/add_dns`, `pdns/delete_dns`). The zone must already exist (for example via `hostkey_dns_domain`).
 
+Destroy sends zone, name, type, **content**, and optional priority — the same row you manage in Terraform, not every record of that type on the name.
+
 ## Example Usage
 
 ```hcl

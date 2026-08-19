@@ -35,12 +35,12 @@ func TestValidateSSHPublicKey(t *testing.T) {
 }
 
 func TestValidateInvapiBaseURL(t *testing.T) {
-	for _, u := range []string{"", "https://invapi.hostkey.com/", "https://invapi.hostkey.ru"} {
+	for _, u := range []string{"", "https://invapi.hostkey.com/", "https://invapi.hostkey.ru", "http://127.0.0.1:9/"} {
 		if err := validateInvapiBaseURL(u); err != nil {
 			t.Fatalf("%q: %v", u, err)
 		}
 	}
-	for _, bad := range []string{"ftp://x", "not-a-url", "https://"} {
+	for _, bad := range []string{"ftp://x", "not-a-url", "https://", "http://invapi.hostkey.com/"} {
 		if err := validateInvapiBaseURL(bad); err == nil {
 			t.Fatalf("expected error for %q", bad)
 		}

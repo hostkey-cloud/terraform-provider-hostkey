@@ -7,12 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-19
+
 ### Fixed
 
+- `hostkey_server`: interrupted create (`pending:<invoice>`) no longer plans as no-op. Next apply waits for **this** invoice/callback (`deploy_keys[invoice]`), not the first new `eq/list` id. Transient `eq/update_servers` errors are retried until timeout. Empty/failed pre-order `eq/list` refuses `order_instance`.
+- InvAPI client: `eq/order_instance` is never HTTP-retried (avoids duplicate paid orders after timeout/5xx).
+- `hostkey_dns_record` destroy: `pdns/delete_dns` includes record **content** (and MX priority when set) so destroy removes one row, not every record of that type on the name.
+- `hostkey_ssh_key` Read: drop state only when the key is missing; keep state on InvAPI/network errors (avoids recreating the account default key after a timeout).
+- InvAPI HTTP client: follow redirects only on the same origin (307/308 no longer replay `token`/`root_pass` to a third host). `base_url` must be HTTPS except localhost. Login JSON `invapi` is applied only for Hostkey hosts and never downgrades TLS.
+- Diagnostics: login errors no longer dump response bodies; `token`/`key`/`password`/`root_pass` are redacted in truncated HTTP bodies.
+- `hostkey_server` reinstall: send only install fields (`os_id`, software, `root_pass`, SSH, RAID/LVM, scripts) — not location, traffic plan, extra IPv4, VLAN, or IPv6.
+- `hostkey_server` plan: changing only `os_name` / `soft_name` / `traffic_plan_name` now syncs the matching `*_id` (computed ids from state no longer block catalog verify).
+- `hostkey_server` reinstall: if `WaitForCallback` fails, the next apply resumes waiting and does not start a second reinstall (prevents double disk wipes).
+- `hostkey_server`: added bounded length validators for `os_template`, `deploy_options`, `post_install_script` to avoid unbounded client-side payloads.
+- Release workflow: pin GitHub Actions to commit SHAs; `persist-credentials: false` on checkout.
 - CI: acc helpers in `provider_test.go` are behind `//go:build acceptance` (same as `acc_test.go`) so `unused` lint does not fail default `golangci-lint`
 
 ### Added
 
+- `hostkey_server` plan: warning when install-time fields trigger reinstall (disk wipe) even though Terraform shows update in-place.
+- `hostkey_server` plan: add an `os_name`-scoped attribute warning for disk wipe on OS change.
+- `hostkey_server` plan: warn when `ipv4_amount > 1` because extra IPv4 addresses may be billed.
+- `hostkey_ssh_key` plan: warn when `default = true` because future server deploys may use the account default key automatically.
 - README RU/EN and Registry troubleshooting: install via Yandex Cloud public Terraform provider mirror when `registry.terraform.io` is blocked (`terraform-mirror.yandexcloud.net`; no Yandex Cloud account)
 
 ## [0.1.3] - 2026-08-17

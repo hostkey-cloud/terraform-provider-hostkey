@@ -58,7 +58,7 @@ func (p *hostkeyProvider) Schema(_ context.Context, _ provider.SchemaRequest, re
 				Sensitive:   true,
 			},
 			"base_url": schema.StringAttribute{
-				Description: "InvAPI base URL, e.g. https://invapi.hostkey.com/ or https://invapi.hostkey.ru/. Overrides region when set. May be set via HOSTKEY_BASE_URL or HOSTKEY_API_URL.",
+				Description: "InvAPI base URL, e.g. https://invapi.hostkey.com/ or https://invapi.hostkey.ru/. HTTPS required except localhost. Overrides region when set. May be set via HOSTKEY_BASE_URL or HOSTKEY_API_URL.",
 				Optional:    true,
 				Validators: []validator.String{
 					invapiBaseURLValidator(),

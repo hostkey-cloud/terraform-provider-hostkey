@@ -73,6 +73,14 @@ func validateServerPlan(_ context.Context, plan, _ serverModel, isCreate bool) d
 		)
 	}
 
+	if !plan.IPv4Amount.IsNull() && !plan.IPv4Amount.IsUnknown() && plan.IPv4Amount.ValueInt64() > 1 {
+		diags.AddAttributeWarning(
+			path.Root("ipv4_amount"),
+			"Extra IPv4 addresses may be billed",
+			fmt.Sprintf("ipv4_amount=%d requests additional IPv4 addresses beyond the default single address. Extra IPv4s may incur recurring charges depending on the location/account.", plan.IPv4Amount.ValueInt64()),
+		)
+	}
+
 	if !plan.PowerOffHard.IsNull() && plan.PowerOffHard.ValueBool() {
 		ps := strings.ToLower(strings.TrimSpace(plan.PowerState.ValueString()))
 		if ps != "" && ps != "off" {

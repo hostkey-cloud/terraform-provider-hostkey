@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // LoginResponse covers both public auth/login shapes:
@@ -85,7 +86,6 @@ type OrderInstanceResponse struct {
 	Status       string `json:"status"`
 	OSName       string `json:"os_name"`
 	SoftName     string `json:"soft_name"`
-	RawBody      string `json:"-"`
 }
 
 type CallbackCheckResponse struct {
@@ -183,6 +183,14 @@ func (r *UpdateServersResponse) DeployKeysMap() map[string]string {
 		return out
 	}
 	return out
+}
+
+// DeployKeyForInvoice returns the callback key for this WHMCS invoice from deploy_keys.
+func DeployKeyForInvoice(keys map[string]string, invoice int) string {
+	if invoice <= 0 || keys == nil {
+		return ""
+	}
+	return strings.TrimSpace(keys[strconv.Itoa(invoice)])
 }
 
 type BillingServer struct {

@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/url"
 	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+
+	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
 )
 
 const (
@@ -29,6 +30,13 @@ const (
 	maxSSHKeyNameLen = 128
 	maxTagKeyLen     = 64
 	maxTagValueLen   = 256
+
+	// Install-time fields forwarded to InvAPI as-is for bare-metal reinstall.
+	// These caps avoid unbounded client-side payload sizes (DoS / accidental huge scripts),
+	// while staying generous enough for real-world options strings.
+	maxOSTemplateLen         = 1024
+	maxDeployOptionsLen      = 8192
+	maxPostInstallScriptLen  = 32768
 )
 
 var (
@@ -280,17 +288,7 @@ func validateInvapiBaseURL(s string) error {
 	if s == "" {
 		return nil
 	}
-	u, err := url.Parse(s)
-	if err != nil {
-		return fmt.Errorf("must be a valid URL: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("URL scheme must be http or https; got %q", u.Scheme)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("URL must include a host")
-	}
-	return nil
+	return invapi.ValidateBaseURL(s)
 }
 
 func validateSSHPublicKey(s string) error {

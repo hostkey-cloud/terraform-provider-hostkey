@@ -3,6 +3,12 @@ package invapi
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+)
+
+var (
+	secretJSONRe = regexp.MustCompile(`(?i)("(?:token|key|password|root_pass|passphrase|secret)"\s*:\s*")[^"]*(")`)
+	secretFormRe = regexp.MustCompile(`(?i)((?:^|&)(?:token|key|password|root_pass)=)[^&]*`)
 )
 
 // APIError is returned when InvAPI responds with a business error envelope.
@@ -20,7 +26,7 @@ func (e *APIError) Error() string {
 	case e.Result != "" && e.Result != "OK":
 		return fmt.Sprintf("invapi error: result=%s", e.Result)
 	default:
-		return fmt.Sprintf("invapi error: %s", e.Body)
+		return fmt.Sprintf("invapi error: %s", redactSecrets(e.Body))
 	}
 }
 
@@ -47,10 +53,10 @@ func decodeAPIError(body []byte) error {
 		msg = envelope.Error
 	}
 	if len(envelope.Code) > 0 && string(envelope.Code) != "0" && string(envelope.Code) != "null" {
-		return &APIError{Message: msg, Body: string(body), Code: codeAsInt(envelope.Code)}
+		return &APIError{Message: msg, Body: redactSecrets(string(body)), Code: codeAsInt(envelope.Code)}
 	}
 	if msg != "" {
-		return &APIError{Message: msg, Body: string(body)}
+		return &APIError{Message: msg, Body: redactSecrets(string(body))}
 	}
 
 	return nil
@@ -86,8 +92,15 @@ func codeAsInt(raw json.RawMessage) int {
 }
 
 func truncate(b []byte, n int) string {
-	if len(b) <= n {
-		return string(b)
+	s := redactSecrets(string(b))
+	if len(s) <= n {
+		return s
 	}
-	return string(b[:n]) + "..."
+	return s[:n] + "..."
+}
+
+func redactSecrets(s string) string {
+	s = secretJSONRe.ReplaceAllString(s, `${1}***${2}`)
+	s = secretFormRe.ReplaceAllString(s, `${1}***`)
+	return s
 }

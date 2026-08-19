@@ -2,7 +2,7 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -106,7 +106,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 		},
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Description: "InvAPI server ID, or pending:<invoice> while deploy is in progress.",
+				Description: "InvAPI server ID. While deploy is in progress after a Paid order, Terraform may store pending:<invoice> until apply links the real id.",
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
@@ -153,7 +153,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"os_name": schema.StringAttribute{
-				Description: "OS name from the catalog (e.g. Ubuntu 22.04). Change triggers reinstall on an existing server.",
+				Description: "OS name from the catalog (e.g. Ubuntu 22.04). At plan time the provider syncs os_id from this name. Change triggers reinstall on an existing server.",
 				Optional:    true,
 			},
 			"soft_id": schema.Int64Attribute{
@@ -168,7 +168,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"soft_name": schema.StringAttribute{
-				Description: "Marketplace software name. Looks up soft_id if not set. Change triggers reinstall.",
+				Description: "Marketplace software name. At plan time the provider syncs soft_id from this name. Change triggers reinstall.",
 				Optional:    true,
 			},
 			"traffic_plan_id": schema.Int64Attribute{
@@ -184,7 +184,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"traffic_plan_name": schema.StringAttribute{
-				Description: "Traffic plan name from the catalog (e.g. 3 TB / 1 Gbps VM). Looks up traffic_plan_id if not set.",
+				Description: "Traffic plan name from the catalog (e.g. 3 TB / 1 Gbps VM). At plan time the provider syncs traffic_plan_id from this name. Changing preset/location/traffic forces replace (new order).",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -216,6 +216,9 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 			"post_install_script": schema.StringAttribute{
 				Description: "Post-install shell script. Change triggers reinstall.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringMaxLen("post_install_script", maxPostInstallScriptLen),
+				},
 			},
 			"deploy_period": schema.StringAttribute{
 				Description: "Billing period: hourly, monthly, quarterly, semi-annually, annually. Omit to use InvAPI default.",
@@ -300,12 +303,18 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 			"os_template": schema.StringAttribute{
 				Description: "OS template for deploy-from-template (admin/advanced). Change triggers reinstall.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringMaxLen("os_template", maxOSTemplateLen),
+				},
 			},
 			"deploy_options": schema.StringAttribute{
 				Description: "InvAPI deploy_options string (billing/location options when required).",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringMaxLen("deploy_options", maxDeployOptionsLen),
 				},
 			},
 			"extra_order_params": schema.MapAttribute{
@@ -432,6 +441,37 @@ func (r *serverResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 
 	resp.Diagnostics.Append(validateServerPlan(ctx, plan, state, req.State.Raw.IsNull())...)
 
+	if !req.State.Raw.IsNull() && needsReinstall(plan, state) {
+		resp.Diagnostics.AddWarning(
+			"Server reinstall will destroy disk data",
+			"This plan changes install-time fields (OS, software, root password, SSH key, disk layout, etc.). Apply runs eq/order_instance reinstall on the same server id — the disk is wiped. This is not a metadata-only update like tags or hostname.",
+		)
+		// Make the most common destructive change obvious in the diff.
+		// Terraform still shows `update in-place` for reinstall, so we use attribute-level warnings.
+		if installStringChanged(plan.OSName, state.OSName) {
+			resp.Diagnostics.AddAttributeWarning(
+				path.Root("os_name"),
+				"Changing os_name will reinstall and wipe the disk",
+				"Apply runs eq/order_instance reinstall on the same server id; all disk data will be lost.",
+			)
+		}
+	}
+
+	if !req.State.Raw.IsNull() {
+		if _, ok := parsePendingInvoice(state.ID.ValueString()); ok {
+			plan.ID = types.StringUnknown()
+			plan.MainIPv4 = types.StringUnknown()
+			plan.Status = types.StringUnknown()
+			if !state.Invoice.IsNull() && !state.Invoice.IsUnknown() {
+				plan.Invoice = state.Invoice
+			}
+			resp.Diagnostics.AddWarning(
+				"Server deploy still in progress",
+				fmt.Sprintf("State is %s. Apply will wait for this invoice and will not place a new order. Until the server id is linked, live status is in the Hostkey panel.", state.ID.ValueString()),
+			)
+		}
+	}
+
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
@@ -490,8 +530,19 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	orderReq := buildOrderRequest(plan)
 
-	beforeList, _ := r.client.EQList(ctx, nil)
-	known := listKnownIDs(beforeList)
+	beforeList, err := r.client.EQList(ctx, nil)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Cannot snapshot existing servers",
+			err.Error()+"; refusing to call order_instance without a pre-order eq/list snapshot.",
+		)
+		return
+	}
+	known, err := snapshotKnownIDs(beforeList)
+	if err != nil {
+		resp.Diagnostics.AddError("Cannot snapshot existing servers", err.Error())
+		return
+	}
 
 	tflog.Info(ctx, "Ordering Hostkey server", map[string]any{
 		"preset_id": orderReq.Preset,
@@ -505,10 +556,10 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 
 	tflog.Info(ctx, "order_instance response", map[string]any{
-		"id":       orderResp.ID,
-		"callback": orderResp.Callback,
-		"invoice":  orderResp.Invoice,
-		"status":   orderResp.Status,
+		"id":           orderResp.ID,
+		"callback_set": orderResp.Callback != "",
+		"invoice":      orderResp.Invoice,
+		"status":       orderResp.Status,
 	})
 
 	// CRITICAL: persist partial state immediately after Paid so interrupted apply
@@ -529,6 +580,9 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 		if err := setPrivateKnownIDs(ctx, resp.Private, known); err != nil {
 			resp.Diagnostics.AddWarning("private state", err.Error())
 		}
+		if err := setPrivateCallback(ctx, resp.Private, orderResp.Callback); err != nil {
+			resp.Diagnostics.AddWarning("private state", err.Error())
+		}
 	}
 
 	serverID := orderResp.ID
@@ -538,38 +592,20 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 			return
 		}
 	}
-	if serverID == 0 && orderResp.Callback != "" {
-		waitResp, waitErr := r.client.WaitForCallback(ctx, orderResp.Callback, invapi.WaitOptions{
+	if serverID == 0 {
+		found, cb, waitErr := r.client.WaitForPendingServer(ctx, orderResp.Invoice, orderResp.Callback, known, invapi.WaitOptions{
 			PollInterval: interval,
 			Timeout:      createTimeout,
 		})
-		if waitErr != nil {
-			resp.Diagnostics.AddWarning("Deploy wait interrupted", waitErr.Error()+"; state saved as pending — re-apply will resume, not re-order.")
-			return
-		}
-		if len(waitResp.Context) > 0 {
-			var cb invapi.CallbackContext
-			if err := json.Unmarshal(waitResp.Context, &cb); err == nil && cb.ID != "" {
-				if parsed, parseErr := strconv.Atoi(cb.ID); parseErr == nil {
-					if err := acceptNewServerID(parsed, known); err != nil {
-						resp.Diagnostics.AddError("Unexpected deploy id from callback", err.Error())
-						return
-					}
-					serverID = parsed
-				}
+		if cb != "" {
+			if err := setPrivateCallback(ctx, resp.Private, cb); err != nil {
+				resp.Diagnostics.AddWarning("private state", err.Error())
 			}
 		}
-	}
-
-	if serverID == 0 {
-		found, waitErr := r.client.WaitForNewServerID(ctx, known, invapi.WaitOptions{
-			PollInterval: interval,
-			Timeout:      createTimeout,
-		})
 		if waitErr != nil {
-			resp.Diagnostics.AddWarning(
+			resp.Diagnostics.AddError(
 				"Deploy still in progress",
-				fmt.Sprintf("%v; callback=%q invoice=%d. State kept as pending:<invoice> — re-run apply to finish (will not place a new order).", waitErr, orderResp.Callback, orderResp.Invoice),
+				fmt.Sprintf("%v; callback=%q invoice=%d. State kept as pending:<invoice>. Re-run apply to wait for this invoice (will not place a new order).", waitErr, cb, orderResp.Invoice),
 			)
 			return
 		}
@@ -615,10 +651,18 @@ func (r *serverResource) Read(ctx context.Context, req resource.ReadRequest, res
 
 	id := state.ID.ValueString()
 	if strings.HasPrefix(id, pendingIDPrefix) {
-		known, _ := getPrivateKnownIDs(ctx, req.Private)
-		resolved, err := r.resolvePendingServer(ctx, known)
+		resolved, cb, err := r.lookupThisPending(ctx, req.Private, state)
+		if cb != "" {
+			if setErr := setPrivateCallback(ctx, resp.Private, cb); setErr != nil {
+				resp.Diagnostics.AddWarning("private state", setErr.Error())
+			}
+		}
 		if err != nil {
 			tflog.Info(ctx, "pending server not ready yet", map[string]any{"id": id, "err": err.Error()})
+			resp.Diagnostics.AddWarning(
+				"Server deploy still in progress",
+				fmt.Sprintf("%s. Apply will wait for this invoice (no new order). Live status is in the Hostkey panel until the server id is linked.", err.Error()),
+			)
 			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 			return
 		}
@@ -651,49 +695,21 @@ func (r *serverResource) Read(ctx context.Context, req resource.ReadRequest, res
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
-// resolvePendingServer finds InvAPI server id for this resource's own pending:* state.
-// It only accepts server IDs that were not in the pre-order snapshot (private known_server_ids).
-// It does not adopt unrelated Pending Instant orders from the account.
-func (r *serverResource) resolvePendingServer(ctx context.Context, knownBefore map[int]struct{}) (int, error) {
-	upd, err := r.client.EQUpdateServers(ctx)
-	if err != nil {
-		return 0, err
+func (r *serverResource) lookupThisPending(ctx context.Context, priv privateData, state serverModel) (int, string, error) {
+	invoice, ok := pendingInvoiceFromState(state)
+	if !ok {
+		return 0, "", fmt.Errorf("invalid pending id %q", state.ID.ValueString())
 	}
+	known, _ := getPrivateKnownIDs(ctx, priv)
+	id, cb, err := r.client.LookupPendingServer(ctx, invoice, getPrivateCallback(ctx, priv), known)
+	return id, cb, err
+}
 
-	for _, key := range upd.DeployKeysMap() {
-		if key == "" {
-			continue
-		}
-		check, cbErr := r.client.CallbackCheck(ctx, key)
-		if cbErr != nil {
-			continue
-		}
-		if done, termErr := callbackDoneOK(check); done && termErr == nil && len(check.Context) > 0 {
-			var cb invapi.CallbackContext
-			if json.Unmarshal(check.Context, &cb) == nil && cb.ID != "" {
-				if id, err := strconv.Atoi(cb.ID); err == nil {
-					if _, existed := knownBefore[id]; !existed {
-						return id, nil
-					}
-				}
-			}
-		}
-	}
-
-	list, err := r.client.EQList(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	ids, err := list.IDs()
-	if err != nil {
-		return 0, err
-	}
-	for _, id := range ids {
-		if _, existed := knownBefore[id]; !existed {
-			return id, nil
-		}
-	}
-	return 0, fmt.Errorf("pending deploy not finished yet (known=%v current=%v)", keysInt(knownBefore), ids)
+func keepPendingComputed(plan *serverModel, state serverModel) {
+	plan.ID = state.ID
+	plan.Invoice = state.Invoice
+	plan.Status = state.Status
+	plan.MainIPv4 = state.MainIPv4
 }
 
 func keysInt(m map[int]struct{}) []int {
@@ -704,29 +720,6 @@ func keysInt(m map[int]struct{}) []int {
 	return out
 }
 
-func callbackDoneOK(check *invapi.CallbackCheckResponse) (bool, error) {
-	if check == nil {
-		return false, nil
-	}
-	scope := strings.ToLower(string(check.Scope))
-	if strings.Contains(scope, "deploy_done") || strings.Contains(scope, "autodeploy completed") {
-		return true, nil
-	}
-	if len(check.Context) > 0 {
-		var cb invapi.CallbackContext
-		if json.Unmarshal(check.Context, &cb) == nil && cb.IP != "" && cb.ID != "" {
-			return true, nil
-		}
-		if strings.Contains(strings.ToLower(string(check.Context)), "error") {
-			return true, fmt.Errorf("deploy failed: %s", string(check.Context))
-		}
-	}
-	if strings.EqualFold(check.Result, "Error") {
-		return true, fmt.Errorf("callback error")
-	}
-	return false, nil
-}
-
 func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state serverModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -735,17 +728,36 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	// Pending → try resolve then continue as update
 	if strings.HasPrefix(state.ID.ValueString(), pendingIDPrefix) {
+		invoice, ok := pendingInvoiceFromState(state)
+		if !ok {
+			resp.Diagnostics.AddError("Invalid pending id", state.ID.ValueString())
+			return
+		}
+		waitTimeout, diags := plan.Timeouts.Create(ctx, defaultCreateTimeout)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 		known, _ := getPrivateKnownIDs(ctx, req.Private)
-		resolved, err := r.resolvePendingServer(ctx, known)
+		waitCtx, cancel := context.WithTimeout(ctx, waitTimeout)
+		defer cancel()
+		resolved, cb, err := r.client.WaitForPendingServer(waitCtx, invoice, getPrivateCallback(ctx, req.Private), known, invapi.WaitOptions{
+			PollInterval: pollIntervalFrom(plan),
+			Timeout:      waitTimeout,
+		})
+		if cb != "" {
+			if setErr := setPrivateCallback(ctx, resp.Private, cb); setErr != nil {
+				resp.Diagnostics.AddWarning("private state", setErr.Error())
+			}
+		}
 		if err != nil {
-			resp.Diagnostics.AddWarning("Still pending", err.Error())
-			plan.ID = state.ID
-			plan.Invoice = state.Invoice
-			plan.Status = state.Status
-			plan.MainIPv4 = state.MainIPv4
+			keepPendingComputed(&plan, state)
 			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			resp.Diagnostics.AddError(
+				"Deploy still in progress",
+				fmt.Sprintf("%v. State kept as %s — re-run apply to wait for this invoice (will not place a new order).", err, state.ID.ValueString()),
+			)
 			return
 		}
 		state.ID = types.StringValue(strconv.Itoa(resolved))
@@ -763,11 +775,49 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		reCtx, cancel := context.WithTimeout(ctx, updateTimeout)
-		defer cancel()
-		if err := r.applyReinstall(reCtx, serverID, plan); err != nil {
-			resp.Diagnostics.AddError("Reinstall failed", err.Error())
-			return
+
+		// If reinstall was started earlier but WaitForCallback failed, resume waiting
+		// using the stored callback marker. This prevents a second wipe on the next apply.
+		if cb := getPrivateReinstallCallback(ctx, req.Private); cb != "" {
+			waitCtx, cancel := context.WithTimeout(ctx, updateTimeout)
+			defer cancel()
+			_, waitErr := r.client.WaitForCallback(waitCtx, cb, invapi.WaitOptions{
+				PollInterval: pollIntervalFrom(plan),
+				Timeout:      updateTimeout,
+			})
+			if waitErr != nil {
+				// Persist marker again defensively (best-effort); keep state as-is.
+				if err := setPrivateReinstallCallback(ctx, resp.Private, cb); err != nil {
+					resp.Diagnostics.AddWarning("private state", err.Error())
+				}
+				resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+				resp.Diagnostics.AddError(
+					"Reinstall still in progress",
+					fmt.Sprintf("%v. State kept as %s — re-run apply to wait for this reinstall (will not place a new order).", waitErr, state.ID.ValueString()),
+				)
+				return
+			}
+			// Callback completed; clear marker and continue with readServerState().
+			if err := setPrivateReinstallCallback(ctx, resp.Private, ""); err != nil {
+				resp.Diagnostics.AddWarning("private state", err.Error())
+			}
+		} else {
+			reCtx, cancel := context.WithTimeout(ctx, updateTimeout)
+			defer cancel()
+			if err := r.applyReinstall(reCtx, serverID, plan, resp.Private); err != nil {
+				var inProg reinstallInProgressError
+				if errors.As(err, &inProg) {
+					// Keep state as-is so the next apply will resume waiting for the same callback.
+					resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+					resp.Diagnostics.AddError(
+						"Reinstall still in progress",
+						fmt.Sprintf("%v. State kept as %s — re-run apply to wait for this reinstall (will not place a new order).", inProg.cause, state.ID.ValueString()),
+					)
+					return
+				}
+				resp.Diagnostics.AddError("Reinstall failed", err.Error())
+				return
+			}
 		}
 	}
 
@@ -820,12 +870,11 @@ func (r *serverResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	}
 
 	if strings.HasPrefix(state.ID.ValueString(), pendingIDPrefix) {
-		known, _ := getPrivateKnownIDs(ctx, req.Private)
-		resolved, err := r.resolvePendingServer(ctx, known)
+		resolved, _, err := r.lookupThisPending(ctx, req.Private, state)
 		if err != nil {
 			resp.Diagnostics.AddWarning(
 				"Pending server not linked yet",
-				"Removed from Terraform state only. Cancel the Pending service in InvAPI/billing panel if needed.",
+				"Removed from Terraform state only. Cancel the Pending service in InvAPI/billing panel if needed. Terraform did not cancel a server id because this invoice is not linked yet.",
 			)
 			return
 		}

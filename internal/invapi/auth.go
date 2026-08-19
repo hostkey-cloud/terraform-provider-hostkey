@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 )
@@ -73,12 +72,12 @@ func (tm *TokenManager) refresh(ctx context.Context) (string, error) {
 
 	var resp LoginResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("auth/login decode: %w; body=%s", err, truncate(body, 512))
+		return "", fmt.Errorf("auth/login decode: %w", err)
 	}
 
 	token, invapiURL, _, expire := resp.Normalized()
 	if token == "" {
-		return "", fmt.Errorf("auth/login: empty token; body=%s", truncate(body, 512))
+		return "", fmt.Errorf("auth/login: empty token")
 	}
 
 	tm.token = token
@@ -89,22 +88,12 @@ func (tm *TokenManager) refresh(ctx context.Context) (string, error) {
 	}
 
 	if invapiURL != "" {
-		canonical := normalizeBaseURL(invapiURL)
-		if tm.client.baseURL != canonical {
-			tm.client.baseURL = canonical
+		canonical, err := CanonicalInvAPIBaseURL(invapiURL)
+		current := tm.client.BaseURL()
+		if err == nil && allowedInvAPIRewrite(current, canonical) == nil && current != canonical {
+			tm.client.setBaseURL(canonical)
 		}
 	}
 
 	return tm.token, nil
-}
-
-func normalizeBaseURL(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return DefaultBaseURLCOM
-	}
-	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
-		raw = "https://" + raw
-	}
-	return strings.TrimSuffix(raw, "/") + "/"
 }

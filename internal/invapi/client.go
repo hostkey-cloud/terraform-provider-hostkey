@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,6 +27,7 @@ type Config struct {
 }
 
 type Client struct {
+	mu         sync.RWMutex
 	baseURL    string
 	httpClient *http.Client
 	maxRetries int
@@ -80,7 +82,7 @@ func defaultHTTPClient(timeout time.Duration) *http.Client {
 		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-	return &http.Client{Timeout: timeout, Transport: transport}
+	return &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: sameOriginRedirect}
 }
 
 func BaseURLForRegion(region string) string {
@@ -97,10 +99,20 @@ func (c *Client) SetAuth(auth *TokenManager) {
 }
 
 func (c *Client) BaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.baseURL
 }
 
+func (c *Client) setBaseURL(u string) {
+	c.mu.Lock()
+	c.baseURL = u
+	c.mu.Unlock()
+}
+
 func (c *Client) moduleURL(module string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.baseURL + module + ".php"
 }
 
@@ -115,12 +127,16 @@ func (c *Client) PostFormWithoutAuth(ctx context.Context, module string, params 
 func (c *Client) postForm(ctx context.Context, module string, params url.Values, withAuth bool) ([]byte, error) {
 	var lastErr error
 	authRetried := false
+	maxAttempts := c.maxRetries
+	if isNonRetryableForm(module, params) {
+		maxAttempts = 1
+	}
 
-	for attempt := 0; attempt < c.maxRetries; attempt++ {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		body, status, err := c.doPostOnce(ctx, module, params, withAuth)
 		if err == nil {
 			if apiErr := decodeAPIError(body); apiErr != nil {
-				if withAuth && !authRetried && isAuthFailure(status, apiErr) {
+				if withAuth && !authRetried && maxAttempts > 1 && isAuthFailure(status, apiErr) {
 					authRetried = true
 					if c.auth != nil {
 						c.auth.Invalidate()
@@ -135,7 +151,7 @@ func (c *Client) postForm(ctx context.Context, module string, params url.Values,
 
 		lastErr = wrapHTTPError(module, status, err)
 
-		if withAuth && !authRetried && isAuthFailure(status, err) {
+		if withAuth && !authRetried && maxAttempts > 1 && isAuthFailure(status, err) {
 			authRetried = true
 			if c.auth != nil {
 				c.auth.Invalidate()
@@ -143,7 +159,7 @@ func (c *Client) postForm(ctx context.Context, module string, params url.Values,
 			continue
 		}
 
-		if !retryableStatus(status) && status != 0 {
+		if maxAttempts == 1 || (!retryableStatus(status) && status != 0) {
 			return nil, lastErr
 		}
 
@@ -155,6 +171,14 @@ func (c *Client) postForm(ctx context.Context, module string, params url.Values,
 	}
 
 	return nil, fmt.Errorf("invapi %s: request failed after retries: %w", module, lastErr)
+}
+
+// isNonRetryableForm marks paid / destructive InvAPI actions that must not be replayed on timeout or 5xx.
+func isNonRetryableForm(module string, params url.Values) bool {
+	if module != "eq" {
+		return false
+	}
+	return params.Get("action") == "order_instance"
 }
 
 func (c *Client) doPostOnce(ctx context.Context, module string, params url.Values, withAuth bool) ([]byte, int, error) {

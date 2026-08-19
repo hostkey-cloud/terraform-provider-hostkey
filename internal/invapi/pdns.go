@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 type DNSDomain struct {
@@ -143,14 +144,30 @@ func (c *Client) PDNSAddDNS(ctx context.Context, req PDNSAddDNSRequest) error {
 	return nil
 }
 
-func (c *Client) PDNSDeleteDNS(ctx context.Context, zone, name, recordType string) error {
+type PDNSDeleteDNSRequest struct {
+	Zone     string
+	Name     string
+	Type     string
+	Content  string
+	Priority int
+}
+
+func (c *Client) PDNSDeleteDNS(ctx context.Context, req PDNSDeleteDNSRequest) error {
+	content := strings.TrimSpace(req.Content)
+	if content == "" {
+		return fmt.Errorf("pdns/delete_dns: content is required (type-only delete would remove all %s records on the name)", req.Type)
+	}
 	params := url.Values{}
 	params.Set("action", "delete_dns")
-	params.Set("params[zone]", zone)
-	if name != "" {
-		params.Set("params[name]", name)
+	params.Set("params[zone]", req.Zone)
+	if req.Name != "" {
+		params.Set("params[name]", req.Name)
 	}
-	params.Set("params[type]", recordType)
+	params.Set("params[type]", req.Type)
+	params.Add("params[content][]", content)
+	if req.Priority > 0 {
+		params.Set("params[priority]", strconv.Itoa(req.Priority))
+	}
 	_, err := c.PostForm(ctx, "pdns", params)
 	if err != nil {
 		return fmt.Errorf("pdns/delete_dns: %w", err)

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -20,6 +21,7 @@ import (
 var (
 	_ resource.Resource                = &sshKeyResource{}
 	_ resource.ResourceWithImportState = &sshKeyResource{}
+	_ resource.ResourceWithModifyPlan  = &sshKeyResource{}
 )
 
 type sshKeyResource struct {
@@ -108,6 +110,26 @@ func (r *sshKeyResource) Configure(_ context.Context, req resource.ConfigureRequ
 	r.client = client
 }
 
+func (r *sshKeyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan sshKeyModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !plan.Default.IsNull() && !plan.Default.IsUnknown() && plan.Default.ValueBool() {
+		resp.Diagnostics.AddAttributeWarning(
+			path.Root("default"),
+			"Default SSH key affects future server deploys",
+			"Setting default=true makes this the account default SSH key in InvAPI. Future server orders that rely on the account default key may install this key automatically.",
+		)
+	}
+}
+
 func (r *sshKeyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan sshKeyModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -151,7 +173,11 @@ func (r *sshKeyResource) Read(ctx context.Context, req resource.ReadRequest, res
 
 	key, err := r.client.SSHKeyGet(ctx, id)
 	if err != nil {
-		resp.State.RemoveResource(ctx)
+		if errors.Is(err, invapi.ErrNotFound) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		resp.Diagnostics.AddError("Read SSH key failed", err.Error())
 		return
 	}
 

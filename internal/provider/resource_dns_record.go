@@ -223,7 +223,16 @@ func (r *dnsRecordResource) Delete(ctx context.Context, req resource.DeleteReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.client.PDNSDeleteDNS(ctx, state.Zone.ValueString(), state.Name.ValueString(), strings.ToUpper(state.Type.ValueString())); err != nil {
+	del := invapi.PDNSDeleteDNSRequest{
+		Zone:    state.Zone.ValueString(),
+		Name:    state.Name.ValueString(),
+		Type:    strings.ToUpper(state.Type.ValueString()),
+		Content: state.Content.ValueString(),
+	}
+	if !state.Priority.IsNull() && state.Priority.ValueInt64() > 0 {
+		del.Priority = int(state.Priority.ValueInt64())
+	}
+	if err := r.client.PDNSDeleteDNS(ctx, del); err != nil {
 		resp.Diagnostics.AddError("Delete DNS record failed", err.Error())
 		return
 	}

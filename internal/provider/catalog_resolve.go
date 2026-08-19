@@ -230,7 +230,7 @@ func (r *serverResource) resolveOrderIDs(ctx context.Context, plan *serverModel)
 	if !plan.PresetID.IsNull() && !plan.PresetID.IsUnknown() {
 		presetID = int(plan.PresetID.ValueInt64())
 	}
-	if presetID == 0 && !plan.PresetName.IsNull() && plan.PresetName.ValueString() != "" {
+	if !plan.PresetName.IsNull() && !plan.PresetName.IsUnknown() && strings.TrimSpace(plan.PresetName.ValueString()) != "" {
 		id, err := resolvePresetID(ctx, r.client, location, plan.PresetName.ValueString())
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("preset_name: %v", err))
@@ -240,8 +240,9 @@ func (r *serverResource) resolveOrderIDs(ctx context.Context, plan *serverModel)
 		}
 	}
 
-	if (plan.OSID.IsNull() || plan.OSID.IsUnknown() || plan.OSID.ValueInt64() == 0) &&
-		!plan.OSName.IsNull() && plan.OSName.ValueString() != "" {
+	// When *_name is set, always sync *_id from the catalog. Computed ids copied from
+	// state (UseStateForUnknown) would otherwise stay stale after a name-only change.
+	if !plan.OSName.IsNull() && !plan.OSName.IsUnknown() && strings.TrimSpace(plan.OSName.ValueString()) != "" {
 		id, err := resolveOSID(ctx, r.client, location, presetID, plan.OSName.ValueString())
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("os_name: %v", err))
@@ -250,8 +251,7 @@ func (r *serverResource) resolveOrderIDs(ctx context.Context, plan *serverModel)
 		}
 	}
 
-	if (plan.SoftID.IsNull() || plan.SoftID.IsUnknown() || plan.SoftID.ValueInt64() == 0) &&
-		!plan.SoftName.IsNull() && plan.SoftName.ValueString() != "" {
+	if !plan.SoftName.IsNull() && !plan.SoftName.IsUnknown() && strings.TrimSpace(plan.SoftName.ValueString()) != "" {
 		id, err := resolveSoftID(ctx, r.client, location, presetID, plan.SoftName.ValueString())
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("soft_name: %v", err))
@@ -260,8 +260,7 @@ func (r *serverResource) resolveOrderIDs(ctx context.Context, plan *serverModel)
 		}
 	}
 
-	if (plan.TrafficPlanID.IsNull() || plan.TrafficPlanID.IsUnknown() || plan.TrafficPlanID.ValueInt64() == 0) &&
-		!plan.TrafficPlanName.IsNull() && plan.TrafficPlanName.ValueString() != "" {
+	if !plan.TrafficPlanName.IsNull() && !plan.TrafficPlanName.IsUnknown() && strings.TrimSpace(plan.TrafficPlanName.ValueString()) != "" {
 		id, err := resolveTrafficPlanID(ctx, r.client, location, presetID, plan.TrafficPlanName.ValueString())
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("traffic_plan_name: %v", err))

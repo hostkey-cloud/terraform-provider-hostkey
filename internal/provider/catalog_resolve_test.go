@@ -1,6 +1,10 @@
 package provider
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/hashicorp/terraform-plugin-framework/types"
+)
 
 // Fixture only — exercises matchNamedID (exact / partial / ambiguous / missing).
 // Real OS/preset/soft/traffic catalogs come from InvAPI and change over time;
@@ -77,5 +81,26 @@ func TestMatchTrafficPlan(t *testing.T) {
 	_, err = matchTrafficPlan("1Gbps 50TB", items)
 	if err == nil {
 		t.Fatal("expected ambiguous duplicate same-price name without traffic_plan_id")
+	}
+}
+
+func TestVerifyNamedIDPairNameOnlyChange(t *testing.T) {
+	items := []namedID{
+		{ID: 187, Name: "Ubuntu 22.04"},
+		{ID: 237, Name: "Ubuntu 24.04"},
+	}
+
+	staleID := types.Int64Value(187)
+	newName := types.StringValue("Ubuntu 24.04")
+	if err := verifyNamedIDPair(newName, staleID, items, "os"); err == nil {
+		t.Fatal("stale os_id must fail when os_name changed")
+	}
+
+	resolved, err := matchNamedID(newName.ValueString(), items)
+	if err != nil || resolved != 237 {
+		t.Fatalf("resolve: id=%d err=%v", resolved, err)
+	}
+	if err := verifyNamedIDPair(newName, types.Int64Value(int64(resolved)), items, "os"); err != nil {
+		t.Fatalf("synced id must pass: %v", err)
 	}
 }
