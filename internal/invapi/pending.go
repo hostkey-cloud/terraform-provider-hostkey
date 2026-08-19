@@ -148,9 +148,7 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 				if matchErr == nil {
 					return sid, "", nil
 				}
-				if !errors.Is(matchErr, ErrPendingNotReady) {
-					// Keep going to eq/list fallback below; update_servers may lag or have a different shape.
-				}
+				// Keep going to eq/list fallback below; update_servers may lag or have a different shape.
 			}
 		}
 	}
