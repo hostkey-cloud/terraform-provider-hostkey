@@ -2,6 +2,7 @@ package invapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -51,9 +52,79 @@ func uniqueNewListID(known map[int]struct{}, ids []int) (int, error) {
 	}
 }
 
+func newcomerIDs(known map[int]struct{}, ids []int) []int {
+	out := make([]int, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := known[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func showHostname(show *ServerShowResponse) string {
+	if show == nil || len(show.ServerData) == 0 {
+		return ""
+	}
+	var sd map[string]any
+	if err := json.Unmarshal(show.ServerData, &sd); err != nil {
+		return ""
+	}
+	for _, key := range []string{"hostname", "server_name", "name"} {
+		if v, ok := sd[key].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func (c *Client) matchPendingListID(ctx context.Context, known map[int]struct{}, wantHostname string) (int, error) {
+	list, listErr := c.EQList(ctx, nil)
+	if listErr != nil {
+		return 0, listErr
+	}
+	ids, idErr := list.IDs()
+	if idErr != nil {
+		return 0, idErr
+	}
+
+	newcomers := newcomerIDs(known, ids)
+	switch len(newcomers) {
+	case 0:
+		return 0, ErrPendingNotReady
+	case 1:
+		return newcomers[0], nil
+	}
+
+	wantHostname = strings.TrimSpace(wantHostname)
+	if wantHostname == "" {
+		return 0, fmt.Errorf("multiple new server ids %v; need invoice callback or hostname match to disambiguate", newcomers)
+	}
+
+	var matched []int
+	for _, id := range newcomers {
+		show, err := c.EQShow(ctx, id)
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(showHostname(show), wantHostname) {
+			matched = append(matched, id)
+		}
+	}
+	switch len(matched) {
+	case 0:
+		return 0, fmt.Errorf("multiple new server ids %v; none matched hostname %q", newcomers, wantHostname)
+	case 1:
+		return matched[0], nil
+	default:
+		return 0, fmt.Errorf("multiple new server ids %v matched hostname %q", matched, wantHostname)
+	}
+}
+
 // LookupPendingServer is one poll for the server created by this invoice (and optional callback).
-// When invoice > 0 it never adopts the first new eq/list id.
-func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback string, known map[int]struct{}) (id int, resolvedCallback string, err error) {
+// When invoice > 0 it prefers deploy_keys/callback, but can safely fall back to
+// eq/list when there is a single new server id or a hostname match disambiguates.
+func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback string, known map[int]struct{}, wantHostname string) (id int, resolvedCallback string, err error) {
 	if known == nil {
 		known = map[int]struct{}{}
 	}
@@ -75,6 +146,13 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 		}
 		sid := CallbackServerID(check)
 		if sid == 0 {
+			if invoice > 0 {
+				sid, listErr := c.matchPendingListID(ctx, known, wantHostname)
+				if listErr != nil {
+					return 0, callback, listErr
+				}
+				return sid, callback, nil
+			}
 			return 0, callback, ErrPendingNotReady
 		}
 		if err := rejectKnownID(sid, invoice, known); err != nil {
@@ -86,15 +164,7 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 		return 0, "", ErrPendingNotReady
 	}
 
-	list, listErr := c.EQList(ctx, nil)
-	if listErr != nil {
-		return 0, "", listErr
-	}
-	ids, idErr := list.IDs()
-	if idErr != nil {
-		return 0, "", idErr
-	}
-	sid, matchErr := uniqueNewListID(known, ids)
+	sid, matchErr := c.matchPendingListID(ctx, known, "")
 	if matchErr != nil {
 		return 0, "", matchErr
 	}
@@ -103,7 +173,7 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 
 // WaitForPendingServer polls LookupPendingServer until this invoice has a server id or timeout.
 // Transient InvAPI/DNS errors are retried until Timeout; terminal deploy errors stop immediately.
-func (c *Client) WaitForPendingServer(ctx context.Context, invoice int, callback string, known map[int]struct{}, opts WaitOptions) (id int, resolvedCallback string, err error) {
+func (c *Client) WaitForPendingServer(ctx context.Context, invoice int, callback string, known map[int]struct{}, wantHostname string, opts WaitOptions) (id int, resolvedCallback string, err error) {
 	interval := opts.PollInterval
 	if interval <= 0 {
 		interval = 15 * time.Second
@@ -120,7 +190,7 @@ func (c *Client) WaitForPendingServer(ctx context.Context, invoice int, callback
 	resolvedCallback = strings.TrimSpace(callback)
 
 	for {
-		sid, cb, lookErr := c.LookupPendingServer(ctx, invoice, resolvedCallback, known)
+		sid, cb, lookErr := c.LookupPendingServer(ctx, invoice, resolvedCallback, known, wantHostname)
 		if cb != "" {
 			resolvedCallback = cb
 		}

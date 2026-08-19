@@ -73,7 +73,7 @@ func TestWaitForPendingServer_BindsInvoiceCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	known := map[int]struct{}{10: {}, 20: {}}
-	id, cb, err := c.WaitForPendingServer(context.Background(), 603548, "", known, WaitOptions{
+	id, cb, err := c.WaitForPendingServer(context.Background(), 603548, "", known, "", WaitOptions{
 		PollInterval: 10 * time.Millisecond,
 		Timeout:      2 * time.Second,
 	})
@@ -109,7 +109,7 @@ func TestWaitForPendingServer_DoesNotAdoptForeignListID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}}, WaitOptions{
+	_, _, err = c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}}, "", WaitOptions{
 		PollInterval: 20 * time.Millisecond,
 		Timeout:      80 * time.Millisecond,
 	})
@@ -147,7 +147,7 @@ func TestWaitForPendingServer_RetriesUpdateServersError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _, err := c.WaitForPendingServer(context.Background(), 222, "", map[int]struct{}{}, WaitOptions{
+	id, _, err := c.WaitForPendingServer(context.Background(), 222, "", map[int]struct{}{}, "", WaitOptions{
 		PollInterval: 20 * time.Millisecond,
 		Timeout:      2 * time.Second,
 	})
@@ -172,8 +172,76 @@ func TestLookupPendingServer_NotReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _, err := c.LookupPendingServer(context.Background(), 603548, "", map[int]struct{}{1: {}})
+	id, _, err := c.LookupPendingServer(context.Background(), 603548, "", map[int]struct{}{1: {}}, "")
 	if !errors.Is(err, ErrPendingNotReady) {
 		t.Fatalf("got id=%d err=%v", id, err)
+	}
+}
+
+func TestWaitForPendingServer_FallsBackToSingleNewListID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "update_servers":
+			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":{"603548":"cb-ours"}}`)
+		case strings.Contains(r.URL.Path, "eq_callback.php"):
+			_, _ = io.WriteString(w, `{"result":"OK","scope":"pending","context":{"id":"","ip":""}}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "list":
+			_, _ = io.WriteString(w, `{"result":"OK","servers":[10,20,101]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{BaseURL: srv.URL + "/", HTTPClient: srv.Client(), MaxRetries: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}, 20: {}}, "", WaitOptions{
+		PollInterval: 10 * time.Millisecond,
+		Timeout:      2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != 101 {
+		t.Fatalf("id=%d want 101", id)
+	}
+}
+
+func TestWaitForPendingServer_HostnameDisambiguatesMultipleNewIDs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "update_servers":
+			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":{"603548":"cb-ours"}}`)
+		case strings.Contains(r.URL.Path, "eq_callback.php"):
+			_, _ = io.WriteString(w, `{"result":"OK","scope":"pending","context":{"id":"","ip":""}}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "list":
+			_, _ = io.WriteString(w, `{"result":"OK","servers":[10,101,102]}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "show" && r.Form.Get("id") == "101":
+			_, _ = io.WriteString(w, `{"result":"OK","server_data":{"hostname":"other-host"}}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "show" && r.Form.Get("id") == "102":
+			_, _ = io.WriteString(w, `{"result":"OK","server_data":{"hostname":"tf-pico-renamed"}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{BaseURL: srv.URL + "/", HTTPClient: srv.Client(), MaxRetries: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}}, "tf-pico-renamed", WaitOptions{
+		PollInterval: 10 * time.Millisecond,
+		Timeout:      2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != 102 {
+		t.Fatalf("id=%d want 102", id)
 	}
 }

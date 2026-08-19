@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `hostkey_server` Create: when an invoice callback exists but never returns a server id, apply can now finish via a safe `eq/list` fallback (single new server id, or hostname disambiguation) instead of waiting forever after the server is already running.
+
 ## [0.1.4] - 2026-08-19
 
 ### Fixed

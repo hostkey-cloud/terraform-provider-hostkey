@@ -593,7 +593,7 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 		}
 	}
 	if serverID == 0 {
-		found, cb, waitErr := r.client.WaitForPendingServer(ctx, orderResp.Invoice, orderResp.Callback, known, invapi.WaitOptions{
+		found, cb, waitErr := r.client.WaitForPendingServer(ctx, orderResp.Invoice, orderResp.Callback, known, plan.Hostname.ValueString(), invapi.WaitOptions{
 			PollInterval: interval,
 			Timeout:      createTimeout,
 		})
@@ -701,7 +701,7 @@ func (r *serverResource) lookupThisPending(ctx context.Context, priv privateData
 		return 0, "", fmt.Errorf("invalid pending id %q", state.ID.ValueString())
 	}
 	known, _ := getPrivateKnownIDs(ctx, priv)
-	id, cb, err := r.client.LookupPendingServer(ctx, invoice, getPrivateCallback(ctx, priv), known)
+	id, cb, err := r.client.LookupPendingServer(ctx, invoice, getPrivateCallback(ctx, priv), known, state.Hostname.ValueString())
 	return id, cb, err
 }
 
@@ -742,7 +742,7 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 		known, _ := getPrivateKnownIDs(ctx, req.Private)
 		waitCtx, cancel := context.WithTimeout(ctx, waitTimeout)
 		defer cancel()
-		resolved, cb, err := r.client.WaitForPendingServer(waitCtx, invoice, getPrivateCallback(ctx, req.Private), known, invapi.WaitOptions{
+		resolved, cb, err := r.client.WaitForPendingServer(waitCtx, invoice, getPrivateCallback(ctx, req.Private), known, plan.Hostname.ValueString(), invapi.WaitOptions{
 			PollInterval: pollIntervalFrom(plan),
 			Timeout:      waitTimeout,
 		})
