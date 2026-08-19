@@ -67,7 +67,7 @@ resource "hostkey_server" "pending_resume" {
     managed  = "hostkey-provider"
   }
 
-  cancellation_type   = 1
+  cancellation_type = 1
   # Make the resume/cancellation marker unique per run to avoid re-attaching to
   # an already-existing pending order/instance in the account.
   cancellation_reason = "terraform pending resume test: ${var.hostname}"
