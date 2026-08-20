@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hostkey_server`: plan warns when `location_name` is unknown so catalog checks are deferred to apply (instead of a silent skip).
 - `hostkey_server`: import-safe RequiresReplace — null→known after import no longer forces replace.
 - `hostkey_server`: Create generates a unique default `hostname` when unset and serializes snapshot+`order_instance` to reduce pending mis-correlation under parallelism.
+- `hostkey_server`: pending link accepts a **single** new server id from `eq/update_servers` / `eq/list` even when InvAPI `eq/show` has not published hostname yet (hostname is self-healed via `eq/rename_server` after link). Previously a requested hostname blocked linking forever when `deploy_keys`/callback were empty.
 - InvAPI: `APIError` messages redact secrets in Message/Result at construct and in `Error()`.
 - `hostkey_dns_record`: `Read` now refreshes `ttl`/`priority` from the live zone when those fields are already tracked in state, so out-of-band edits are surfaced as drift on the next plan instead of being silently masked.
 

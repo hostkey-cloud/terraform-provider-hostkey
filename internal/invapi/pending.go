@@ -182,19 +182,11 @@ func (c *Client) matchPendingIDs(ctx context.Context, known map[int]struct{}, id
 	case 0:
 		return 0, ErrPendingNotReady
 	case 1:
-		// Single newcomer can be accepted immediately only when caller did not
-		// request hostname correlation.
-		if wantHostname == "" {
-			return newcomers[0], nil
-		}
-		show, err := c.EQShow(ctx, newcomers[0])
-		if err != nil {
-			return 0, ErrPendingNotReady
-		}
-		if showContainsHostname(show, wantHostname) {
-			return newcomers[0], nil
-		}
-		return 0, ErrPendingNotReady
+		// Exactly one newcomer: link it. Hostname on eq/show often lags or is
+		// empty even after Active; Create self-heals via eq/rename_server.
+		// Requiring a hostname match here left apply stuck forever when
+		// deploy_keys/callback were also empty.
+		return newcomers[0], nil
 	}
 
 	if wantHostname == "" {

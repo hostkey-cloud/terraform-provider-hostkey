@@ -255,12 +255,12 @@ func TestWaitForPendingServer_FallsBackToSingleNewListID(t *testing.T) {
 	}
 }
 
-func TestWaitForPendingServer_SingleNewListIDWithHostnameWaitsForHostnameCorrelation(t *testing.T) {
+func TestWaitForPendingServer_SingleNewcomerLinksWithoutHostnameOnShow(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		switch {
 		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "update_servers":
-			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":{"603548":"cb-ours"}}`)
+			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":{"603548":"cb-ours"},"servers":[10,20,101]}`)
 		case strings.Contains(r.URL.Path, "eq_callback.php"):
 			_, _ = io.WriteString(w, `{"result":"OK","scope":"pending","context":{"id":"","ip":""}}`)
 		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "list":
@@ -278,12 +278,15 @@ func TestWaitForPendingServer_SingleNewListIDWithHostnameWaitsForHostnameCorrela
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}, 20: {}}, "tf-pending-timeout-20260819-1709", WaitOptions{
+	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}, 20: {}}, "tf-pending-timeout-20260819-1709", WaitOptions{
 		PollInterval: 10 * time.Millisecond,
-		Timeout:      80 * time.Millisecond,
+		Timeout:      2 * time.Second,
 	})
-	if err == nil || !strings.Contains(err.Error(), "timed out waiting for invoice 603548") {
-		t.Fatalf("expected timeout while hostname is unavailable, got err=%v", err)
+	if err != nil {
+		t.Fatalf("expected single newcomer link without hostname on show, got err=%v", err)
+	}
+	if id != 101 {
+		t.Fatalf("id=%d want 101", id)
 	}
 }
 
