@@ -283,7 +283,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"ipv4_amount": schema.Int64Attribute{
-				Description: "Number of IPv4 addresses to order.",
+				Description: "Total desired IPv4 count (1 = the default free address). Values above 1 request paid extras; the provider maps this to InvAPI's additive ipv4_amount.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.Int64{
 					requiresReplaceOnKnownInt64Change(),

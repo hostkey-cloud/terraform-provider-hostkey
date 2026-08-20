@@ -60,7 +60,7 @@ Dedicated presets use the same resource. Catalog names differ from the control-p
 |--------------|-----------------------------|
 | v2-promo | `bm.v2-promo` |
 | 1Gbps unmetered (10000 ₽) | `1Gbps unmetered (10000 P)` (or id from catalog) |
-| 1 IPv4 - Free | default (`ipv4_amount` omitted or `1`) |
+| 1 IPv4 - Free | default (`ipv4_amount` omitted or `1`; provider never sends `ipv4_amount=1` to InvAPI) |
 | IPv6 /64 block | `ipv6_block = true` — **only if the panel shows the checkbox** for this preset (NL/US; not all bm) |
 
 Bare names like `1Gbps unmetered` can match **two** InvAPI rows (different prices). Prefer a price hint (`- FREE`, `(10000 P)`) or `traffic_plan_id`. Confirm with [`hostkey_traffic_plans`](../data-sources/traffic_plans.md) (`instance_id` = preset id).
@@ -121,7 +121,7 @@ Same resource and attributes as VPS/dedicated — change **`preset_name`** and p
 - `deploy_period` — `hourly`, `monthly`, `quarterly`, `semi-annually`, `annually`. Forces replace.
 - `deploy_notify` — email when deploy finishes.
 - `ipv4_amount`, `ipv6_block`, `vlan`, `private_vlan`, `custom_domain`, `deploy_options` — order-time options (mostly force replace). `deploy_options` max 8192 chars; `deploy_options` and `os_template` are forwarded as-is — invalid values fail at order/reinstall time. `ipv6_block`: dedicated catalog `virtual=0` and location **NL or US**. InvAPI does not expose a per-preset IPv6 checkbox — set it only when the panel shows it.
-- `ipv4_amount > 1` emits a plan warning because extra IPv4 addresses may be billed.
+- `ipv4_amount` is the **total** desired IPv4 count (1 = the default free address). The provider converts this to InvAPI's additive extra-address count and never sends `ipv4_amount=1` on the wire (sending `1` literally would bill one paid extra on top of the free default). Values `> 1` emit a plan warning because extras may be billed.
 - `tags` (Map of String) — user tags only (Hostkey system tags are not synced back).
 - `power_state` — `on` / `off`. Omit to leave power unmanaged.
 - `power_off_hard` — use `eq/hard_off` when turning off.

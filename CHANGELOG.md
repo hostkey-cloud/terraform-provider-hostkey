@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `hostkey_server`: `ipv4_amount` is treated as the **total** desired IPv4 count (1 = default free address, matching docs). InvAPI's `order_instance` parameter is additive on top of that default — previously sending `ipv4_amount=1` billed one paid extra. The provider now omits the wire param for 0/1 and forwards `ipv4_amount - 1` only when requesting more than the default.
 - `hostkey_server`: `main_ipv4` and `status` use `UseStateForUnknown`, so a no-op plan no longer perpetually shows `1 to change` with only those fields as `(known after apply)`.
 - `hostkey_server`: when both `os_name`/`soft_name`/`traffic_plan_name` and an explicit conflicting `*_id` are set in HCL, plan fails with a clear catalog conflict message instead of `Provider produced invalid plan`.
 - `hostkey_server`: pending deploy timeout on Update now emits a **warning** (state kept as `pending:<invoice>`), matching Create — avoids failed apply / replace pressure that could drop a paid order from state on destroy.

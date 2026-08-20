@@ -110,8 +110,12 @@ func (c *Client) EQOrderInstance(ctx context.Context, req OrderInstanceRequest) 
 	if req.IPv6Block != nil && *req.IPv6Block {
 		params.Set("ipv6", "1")
 	}
-	if req.IPv4Amount > 0 {
-		params.Set("ipv4_amount", strconv.Itoa(req.IPv4Amount))
+	// InvAPI's ipv4_amount is additional addresses beyond the always-included
+	// default one, not a total. Schema/docs treat ipv4_amount as the desired
+	// total (1 = default single address). Convert and never send ipv4_amount=1
+	// (that would bill one paid extra on top of the free default).
+	if req.IPv4Amount > 1 {
+		params.Set("ipv4_amount", strconv.Itoa(req.IPv4Amount-1))
 	}
 	if req.VLAN > 0 {
 		params.Set("vlan", strconv.Itoa(req.VLAN))
