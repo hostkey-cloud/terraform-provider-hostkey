@@ -12,3 +12,9 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+    # gosec catches common Go security issues (weak randomness,
+    # unchecked file perms, etc); bodyclose catches HTTP response bodies
+    # that are never closed (invapi's http.Client call sites are exactly
+    # the kind of code this is meant to guard).
+    - gosec
+    - bodyclose

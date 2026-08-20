@@ -17,7 +17,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -28,9 +27,10 @@ import (
 )
 
 var (
-	_ resource.Resource                = &serverResource{}
-	_ resource.ResourceWithImportState = &serverResource{}
-	_ resource.ResourceWithModifyPlan  = &serverResource{}
+	_ resource.Resource                   = &serverResource{}
+	_ resource.ResourceWithImportState    = &serverResource{}
+	_ resource.ResourceWithModifyPlan     = &serverResource{}
+	_ resource.ResourceWithValidateConfig = &serverResource{}
 )
 
 const (
@@ -40,7 +40,7 @@ const (
 )
 
 // createOrderMu serializes the pre-order eq/list snapshot and eq/order_instance
-// across concurrent hostkey_server Create() calls in this process (AUD-005).
+// across concurrent hostkey_server Create() calls in this process.
 // Only the short snapshot+order window is locked — not the long deploy wait.
 var createOrderMu sync.Mutex
 
@@ -84,7 +84,6 @@ type serverModel struct {
 	CustomDomain       types.String   `tfsdk:"custom_domain"`
 	OSTemplate         types.String   `tfsdk:"os_template"`
 	DeployOptions      types.String   `tfsdk:"deploy_options"`
-	ExtraOrderParams   types.Map      `tfsdk:"extra_order_params"`
 	Tags               types.Map      `tfsdk:"tags"`
 	PollIntervalSecs   types.Int64    `tfsdk:"poll_interval_seconds"`
 	MainIPv4           types.String   `tfsdk:"main_ipv4"`
@@ -228,6 +227,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 			"ssh_key": schema.StringAttribute{
 				Description: "Public SSH key injected during deploy/reinstall. Change triggers reinstall.",
 				Optional:    true,
+				Sensitive:   true,
 				Validators: []validator.String{
 					sshPublicKeyValidator(),
 				},
@@ -336,16 +336,8 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 					stringMaxLen("deploy_options", maxDeployOptionsLen),
 				},
 			},
-			"extra_order_params": schema.MapAttribute{
-				Description: "Advanced: closed. All eq/order_instance fields are typed attributes; any extra_order_params key is rejected and is not forwarded.",
-				ElementType: types.StringType,
-				Optional:    true,
-				PlanModifiers: []planmodifier.Map{
-					mapplanmodifier.RequiresReplace(),
-				},
-			},
 			"tags": schema.MapAttribute{
-				Description: "User tags on the server (tag name в†’ value). Synced via tags/add and tags/remove after the server exists.",
+				Description: "User tags on the server (tag name → value). Synced via tags/add and tags/remove after the server exists.",
 				ElementType: types.StringType,
 				Optional:    true,
 			},
@@ -428,6 +420,22 @@ func (r *serverResource) Configure(_ context.Context, req resource.ConfigureRequ
 		return
 	}
 	r.client = client
+}
+
+// ValidateConfig runs the purely static, zero-network hostkey_server checks
+// (see validate_server_config.go) so they surface on a bare `terraform
+// validate` -- without provider credentials -- instead of being invisible
+// until ModifyPlan/Create runs against a configured client.
+func (r *serverResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	if req.Config.Raw.IsNull() {
+		return
+	}
+	var config serverModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(validateServerConfig(config)...)
 }
 
 func (r *serverResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {

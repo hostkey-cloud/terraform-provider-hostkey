@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.7] - 2026-08-20
 
+### Removed
+
+- `hostkey_server`: removed the `extra_order_params` attribute entirely. It was a decoy: any key set on it always failed plan validation, so it could never forward anything — it only added confusion and an unused `RequiresReplace` plan modifier. All real order-time fields are the existing typed attributes.
+
+### Changed
+
+- `hostkey_server`: static, zero-network config checks (own_os/os_template/deploy_options/ipv4_amount/vlan/private_vlan warnings, `power_off_hard` requires `power_state=off`, bare-metal option checks, tag length limits) moved from the `ModifyPlan` hook into a new `ValidateConfig` implementation, so they now surface on a bare `terraform validate` without provider credentials. The create-only "preset/OS/traffic plan required" checks stay in `ModifyPlan` since they need `isCreate`, which `ValidateConfig` cannot determine.
+- `hostkey_server`: `ssh_key` is now marked `Sensitive` so it is redacted from plan/apply output and logs.
+- InvAPI client: catalog list calls (`presets/list`, `os/list`, `traffic_plans/list`, `software/list`) are now cached in-process for 30s per unique request, cutting redundant lookups during `ModifyPlan` + `Create`/`Update` for the same operation.
+- InvAPI client: retry backoff between attempts is now exponential with full jitter (capped at 8s) instead of a fixed linear delay, and a `Retry-After` response header (capped at 30s) is honored when present.
+- InvAPI client: HTTP response bodies are now read through a hard 8 MiB cap instead of unbounded, so a misbehaving/compromised upstream response can no longer exhaust memory.
+- `root_size` is documented and validated as a **percentage** of total disk (1–100), matching InvAPI — not GB. The earlier GB-vs-`hdd` capacity check was incorrect and was removed.
+- Pending wait polls log InvAPI status hints via `tflog` (`TF_LOG=INFO`) — Terraform CLI still hardcodes the `Still creating...` line and cannot show custom status there.
+- Create with `ssh_key` emits a warning to verify key login (InvAPI does not expose authorized_keys confirmation).
+
+### Added
+
+- CI: added `gosec` and `bodyclose` to golangci-lint, added a `govulncheck` dependency-vulnerability step, and pinned `actions/checkout`/`actions/setup-go`/`hashicorp/setup-terraform` to commit SHAs.
+- Tests: added an import-then-replan empty-plan assertion to `TestAccServer_basic` (import-safe replace regression guard), plus new `TestAccServerIP_basic` and `TestAccDNSRecord_basic` acceptance tests covering `hostkey_server_ip` and `hostkey_dns_record`, which previously had none.
+
 ### Fixed
 
 - `hostkey_server`: `main_ipv4` and `status` use `UseStateForUnknown`, so a no-op plan no longer perpetually shows `1 to change` with only those fields as `(known after apply)`.
@@ -17,15 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hostkey_server`: after create, if InvAPI did not apply `hostname`, provider attempts `eq/rename_server` and warns on residual drift; Read records live hostname from `eq/show` when available.
 - `hostkey_server`: Read removes the resource from state when InvAPI reports the server as not found (cancelled/deleted outside Terraform), instead of failing every plan.
 - `hostkey_server`: plan warns when `location_name` is unknown so catalog checks are deferred to apply (instead of a silent skip).
-- `hostkey_server`: import-safe RequiresReplace — null→known after import no longer forces replace (AUD-001).
-- `hostkey_server`: Create generates a unique default `hostname` when unset and serializes snapshot+`order_instance` (AUD-005) to reduce pending mis-correlation under parallelism.
+- `hostkey_server`: import-safe RequiresReplace — null→known after import no longer forces replace.
+- `hostkey_server`: Create generates a unique default `hostname` when unset and serializes snapshot+`order_instance` to reduce pending mis-correlation under parallelism.
 - InvAPI: `APIError` messages redact secrets in Message/Result at construct and in `Error()`.
-
-### Changed
-
-- `root_size` is documented and validated as a **percentage** of total disk (1–100), matching InvAPI — not GB. The earlier GB-vs-`hdd` capacity check was incorrect and was removed.
-- Pending wait polls log InvAPI status hints via `tflog` (`TF_LOG=INFO`) — Terraform CLI still hardcodes the `Still creating...` line and cannot show custom status there.
-- Create with `ssh_key` emits a warning to verify key login (InvAPI does not expose authorized_keys confirmation).
+- `hostkey_dns_record`: `Read` now refreshes `ttl`/`priority` from the live zone when those fields are already tracked in state, so out-of-band edits are surfaced as drift on the next plan instead of being silently masked.
 
 ## [0.1.6] - 2026-08-19
 

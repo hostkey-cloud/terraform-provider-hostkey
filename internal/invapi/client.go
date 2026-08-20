@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +18,24 @@ const (
 	DefaultBaseURLCOM = "https://invapi.hostkey.com/"
 	DefaultBaseURLRU  = "https://invapi.hostkey.ru/"
 	defaultUserAgent  = "terraform-provider-hostkey/dev"
+
+	// maxResponseBodyBytes caps how much of an InvAPI response body the client
+	// buffers into memory. InvAPI responses are small JSON documents; without a
+	// cap, a misbehaving intermediary, a same-origin redirect to a huge file, or
+	// a compromised endpoint could force the process to read an unbounded body
+	// into memory.
+	maxResponseBodyBytes = 8 << 20 // 8 MiB
+
+	// maxRetryAfter bounds how long the client will honor a server-provided
+	// Retry-After header, so a malicious or misconfigured server cannot stall
+	// a plan/apply indefinitely.
+	maxRetryAfter = 30 * time.Second
+
+	// defaultCatalogCacheTTL controls how long presets/os/software/traffic_plans
+	// list responses are memoized. These catalogs change rarely; caching for a
+	// short window eliminates redundant round-trips within the same
+	// terraform plan/apply run without risking long-lived staleness.
+	defaultCatalogCacheTTL = 30 * time.Second
 )
 
 type Config struct {
@@ -33,6 +53,12 @@ type Client struct {
 	maxRetries int
 	userAgent  string
 	auth       *TokenManager
+
+	// catalogMu/catalogCache/catalogTTL implement the short-lived in-memory
+	// catalog cache described in catalog.go.
+	catalogMu    sync.Mutex
+	catalogCache map[string]catalogCacheEntry
+	catalogTTL   time.Duration
 }
 
 func NewClient(cfg Config, auth *TokenManager) (*Client, error) {
@@ -66,6 +92,7 @@ func NewClient(cfg Config, auth *TokenManager) (*Client, error) {
 		maxRetries: retries,
 		userAgent:  ua,
 		auth:       auth,
+		catalogTTL: defaultCatalogCacheTTL,
 	}, nil
 }
 
@@ -133,7 +160,7 @@ func (c *Client) postForm(ctx context.Context, module string, params url.Values,
 	}
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		body, status, err := c.doPostOnce(ctx, module, params, withAuth)
+		body, status, retryAfter, err := c.doPostOnce(ctx, module, params, withAuth)
 		if err == nil {
 			if apiErr := decodeAPIError(body); apiErr != nil {
 				if withAuth && !authRetried && maxAttempts > 1 && isAuthFailure(status, apiErr) {
@@ -163,10 +190,17 @@ func (c *Client) postForm(ctx context.Context, module string, params url.Values,
 			return nil, lastErr
 		}
 
+		// Prefer a server-provided Retry-After (e.g. on 429/503) over our own
+		// backoff schedule, capped at maxRetryAfter.
+		wait := backoff(attempt)
+		if retryAfter > 0 {
+			wait = retryAfter
+		}
+
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(backoff(attempt)):
+		case <-time.After(wait):
 		}
 	}
 
@@ -181,12 +215,15 @@ func isNonRetryableForm(module string, params url.Values) bool {
 	return params.Get("action") == "order_instance"
 }
 
-func (c *Client) doPostOnce(ctx context.Context, module string, params url.Values, withAuth bool) ([]byte, int, error) {
+// doPostOnce performs a single HTTP attempt. It returns the decoded
+// Retry-After duration (0 if absent/unparseable) alongside the usual
+// body/status/err so postForm can honor a server-requested delay.
+func (c *Client) doPostOnce(ctx context.Context, module string, params url.Values, withAuth bool) ([]byte, int, time.Duration, error) {
 	reqParams := cloneValues(params)
 	if withAuth && reqParams.Get("token") == "" && c.auth != nil {
 		token, err := c.auth.Token(ctx)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 		reqParams.Set("token", token)
 	}
@@ -194,7 +231,7 @@ func (c *Client) doPostOnce(ctx context.Context, module string, params url.Value
 	encoded := reqParams.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.moduleURL(module), strings.NewReader(encoded))
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", c.userAgent)
@@ -204,20 +241,58 @@ func (c *Client) doPostOnce(ctx context.Context, module string, params url.Value
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, readErr := io.ReadAll(resp.Body)
+	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+
+	// Read at most maxResponseBodyBytes+1: if the extra byte is present, the
+	// body exceeded the cap and we fail closed instead of buffering more.
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes+1))
 	if readErr != nil {
-		return nil, resp.StatusCode, readErr
+		return nil, resp.StatusCode, retryAfter, readErr
+	}
+	if len(body) > maxResponseBodyBytes {
+		return nil, resp.StatusCode, retryAfter, fmt.Errorf("invapi %s: response body exceeds %d byte limit", module, maxResponseBodyBytes)
 	}
 
 	if resp.StatusCode >= 400 {
-		return body, resp.StatusCode, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(body, 512))
+		return body, resp.StatusCode, retryAfter, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(body, 512))
 	}
 
-	return body, resp.StatusCode, nil
+	return body, resp.StatusCode, retryAfter, nil
+}
+
+// parseRetryAfter decodes an HTTP Retry-After header (either delay-seconds or
+// an HTTP-date form) into a non-negative duration capped at maxRetryAfter.
+// It returns 0 when the header is absent, negative, or unparseable.
+func parseRetryAfter(header string) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(header); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		d := time.Duration(secs) * time.Second
+		if d > maxRetryAfter {
+			return maxRetryAfter
+		}
+		return d
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		d := time.Until(t)
+		if d <= 0 {
+			return 0
+		}
+		if d > maxRetryAfter {
+			return maxRetryAfter
+		}
+		return d
+	}
+	return 0
 }
 
 func cloneValues(in url.Values) url.Values {
@@ -262,12 +337,31 @@ func isAuthFailure(status int, err error) bool {
 	return false
 }
 
+// backoff returns an exponential-with-full-jitter delay for retry attempt
+// (0-indexed): the nominal delay doubles each attempt up to a cap, and the
+// actual wait is randomized within [d/2, d) so concurrent retries (e.g.
+// several hostkey_server resources retrying within the same apply) do not
+// all wake up and hit InvAPI at the same instant.
 func backoff(attempt int) time.Duration {
-	d := time.Duration(attempt+1) * 300 * time.Millisecond
-	if d > 3*time.Second {
-		d = 3 * time.Second
+	const (
+		base     = 300 * time.Millisecond
+		capDelay = 8 * time.Second
+	)
+	if attempt < 0 {
+		attempt = 0
 	}
-	return d
+	if attempt > 10 {
+		attempt = 10 // avoid shift overflow; capDelay is reached well before this
+	}
+	d := base * time.Duration(int64(1)<<uint(attempt))
+	if d > capDelay || d <= 0 {
+		d = capDelay
+	}
+	half := int64(d) / 2
+	if half <= 0 {
+		return d
+	}
+	return time.Duration(half) + time.Duration(rand.Int63n(half))
 }
 
 func wrapHTTPError(module string, status int, err error) error {

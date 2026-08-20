@@ -34,8 +34,8 @@ resource "hostkey_dns_record" "www" {
 
 ### Optional
 
-- `ttl` (Number) TTL in seconds (InvAPI default often `3600`).
-- `priority` (Number) Priority for MX/SRV.
+- `ttl` (Number) TTL in seconds (InvAPI default often `3600`). When set in config, Read refreshes it from the live zone so out-of-band edits show as drift.
+- `priority` (Number) Priority for MX/SRV. When set in config, Read refreshes it from the live zone.
 
 ### Read-Only
 

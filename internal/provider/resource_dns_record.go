@@ -190,20 +190,42 @@ func (r *dnsRecordResource) Read(ctx context.Context, req resource.ReadRequest, 
 	wantName := state.Name.ValueString()
 	wantType := strings.ToUpper(state.Type.ValueString())
 	wantContent := state.Content.ValueString()
-	found := false
-	for _, rec := range records {
+	var matched *invapi.DNSRecord
+	for i := range records {
+		rec := records[i]
 		name := rec.Name
 		if strings.EqualFold(name, wantName) || strings.EqualFold(strings.TrimSuffix(name, "."), wantName) ||
 			(wantName == "@" && (name == "@" || name == state.Zone.ValueString() || name == state.Zone.ValueString()+".")) {
 			if strings.EqualFold(rec.Type, wantType) && rec.Content == wantContent {
-				found = true
+				matched = &rec
 				break
 			}
 		}
 	}
-	if !found {
+	if matched == nil {
 		resp.State.RemoveResource(ctx)
 		return
+	}
+	// Refresh ttl/priority from the live zone so out-of-band edits (panel,
+	// pdns directly) are surfaced as drift on the next plan.
+	// Only refresh when the field was already tracked in state (non-null):
+	// ttl/priority are Optional (not Computed), so a field the user never
+	// set stays null here on purpose -- otherwise InvAPI's own default
+	// (e.g. ttl=3600) would get written into state and permanently conflict
+	// with the still-null config value on every subsequent plan.
+	if !state.TTL.IsNull() {
+		if matched.TTL > 0 {
+			state.TTL = types.Int64Value(int64(matched.TTL))
+		} else {
+			state.TTL = types.Int64Null()
+		}
+	}
+	if !state.Priority.IsNull() {
+		if matched.Priority > 0 {
+			state.Priority = types.Int64Value(int64(matched.Priority))
+		} else {
+			state.Priority = types.Int64Null()
+		}
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }

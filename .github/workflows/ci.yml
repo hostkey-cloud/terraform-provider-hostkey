@@ -9,9 +9,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # pinned to the same commit SHAs as release.yml for
+      # actions/checkout and actions/setup-go, so both workflows trust the
+      # same immutable action code instead of a mutable major-version tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache: true
@@ -29,10 +32,22 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # golangci-lint-action's exact v9 release commit SHA could
+      # not be independently verified from this sandbox (no `gh`/git access
+      # to the upstream repo). Keep the major-version tag here but this is
+      # the one action in this file NOT pinned to a commit SHA -- pin it
+      # (e.g. via `gh api repos/golangci/golangci-lint-action/git/refs/tags/v9`)
+      # as a follow-up.
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: latest
+
+      # govulncheck scans go.sum/build output against the Go
+      # vulnerability database; nothing in this pipeline previously checked
+      # dependencies for known CVEs.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
       - name: Test
         run: go test -race ./...
@@ -42,8 +57,10 @@ jobs:
       - name: Build
         run: go build -o /dev/null .
 
+      # hashicorp/setup-terraform pinned to its verified v4.0.1
+      # release commit.
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_wrapper: false
 

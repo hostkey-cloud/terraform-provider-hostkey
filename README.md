@@ -200,7 +200,7 @@ terraform destroy
 * Перед заказом: `data.hostkey_presets` + `data.hostkey_traffic_plans` с **`instance_id`** = id пресета.
 * У dedicated часто **два плана с одним `name` и разной `price`** — используйте подсказку из панели (`- FREE`, `(10000 P)`) или `traffic_plan_id`.
 * **`disk_mirror`** — только если в `presets/list` у пресета **2+ диска**; на однодисковых (в т.ч. `bm.v2-promo`) поле **не задавать**.
-* **`extra_order_params`** закрыт: любой ключ в плане = ошибка (все поля заказа типизированы).
+* Поля заказа только типизированные атрибуты (`extra_order_params` удалён).
 * BM / GPU / vGPU, RAID, IPv6, reinstall — [docs/resources/server.md](docs/resources/server.md).
 
 Локальная сборка без Registry: `go install` + [dev_overrides](examples/dev-terraform.rc) — [CONTRIBUTING.md](CONTRIBUTING.md).

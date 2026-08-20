@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type OSListResponse struct {
@@ -71,7 +72,57 @@ type SoftwareEntry struct {
 	Active int    `json:"active"`
 }
 
+// catalogCacheEntry is a single memoized catalog response. Catalog
+// endpoints (presets/os/software/traffic_plans list) change rarely, but were
+// previously called with zero caching -- e.g. resolveOrderIDs and
+// verifyOrderCatalog each independently called PresetsList for the same
+// plan. A short-lived cache keyed by the request filter removes this
+// redundancy without risking meaningfully stale data.
+type catalogCacheEntry struct {
+	expires time.Time
+	value   any
+}
+
+func (c *Client) catalogCacheGet(key string) (any, bool) {
+	c.catalogMu.Lock()
+	defer c.catalogMu.Unlock()
+	entry, ok := c.catalogCache[key]
+	if !ok || time.Now().After(entry.expires) {
+		return nil, false
+	}
+	return entry.value, true
+}
+
+func (c *Client) catalogCacheSet(key string, value any) {
+	ttl := c.catalogTTL
+	if ttl <= 0 {
+		ttl = defaultCatalogCacheTTL
+	}
+	c.catalogMu.Lock()
+	defer c.catalogMu.Unlock()
+	if c.catalogCache == nil {
+		c.catalogCache = make(map[string]catalogCacheEntry)
+	}
+	c.catalogCache[key] = catalogCacheEntry{expires: time.Now().Add(ttl), value: value}
+}
+
+// InvalidateCatalogCache clears all memoized presets/os/software/traffic_plans
+// list responses. Call this if a test or long-running process needs to force
+// a fresh catalog read.
+func (c *Client) InvalidateCatalogCache() {
+	c.catalogMu.Lock()
+	defer c.catalogMu.Unlock()
+	c.catalogCache = nil
+}
+
 func (c *Client) PresetsList(ctx context.Context, filter PresetsListFilter) (*PresetListResponse, error) {
+	key := "presets:" + filter.Location
+	if cached, ok := c.catalogCacheGet(key); ok {
+		if resp, ok := cached.(*PresetListResponse); ok {
+			return resp, nil
+		}
+	}
+
 	params := url.Values{}
 	params.Set("action", "list")
 	if filter.Location != "" {
@@ -85,10 +136,18 @@ func (c *Client) PresetsList(ctx context.Context, filter PresetsListFilter) (*Pr
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("presets/list decode: %w", err)
 	}
+	c.catalogCacheSet(key, &resp)
 	return &resp, nil
 }
 
 func (c *Client) OSList(ctx context.Context, filter OSListFilter) (*OSListResponse, error) {
+	key := fmt.Sprintf("os:%s:%d:%d:%s", filter.Location, filter.ServerID, filter.InstanceID, filter.BillPeriod)
+	if cached, ok := c.catalogCacheGet(key); ok {
+		if resp, ok := cached.(*OSListResponse); ok {
+			return resp, nil
+		}
+	}
+
 	params := url.Values{}
 	params.Set("action", "list")
 	if filter.Location != "" {
@@ -111,10 +170,18 @@ func (c *Client) OSList(ctx context.Context, filter OSListFilter) (*OSListRespon
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("os/list decode: %w", err)
 	}
+	c.catalogCacheSet(key, &resp)
 	return &resp, nil
 }
 
 func (c *Client) TrafficPlansList(ctx context.Context, filter TrafficPlansListFilter) (*TrafficPlansListResponse, error) {
+	key := fmt.Sprintf("traffic:%s:%d:%d", filter.Location, filter.ServerID, filter.InstanceID)
+	if cached, ok := c.catalogCacheGet(key); ok {
+		if resp, ok := cached.(*TrafficPlansListResponse); ok {
+			return resp, nil
+		}
+	}
+
 	params := url.Values{}
 	params.Set("action", "list")
 	if filter.Location != "" {
@@ -140,10 +207,18 @@ func (c *Client) TrafficPlansList(ctx context.Context, filter TrafficPlansListFi
 	if !strings.EqualFold(resp.Result, "OK") && resp.Result != "" {
 		return nil, fmt.Errorf("traffic_plans/list: result=%s", resp.Result)
 	}
+	c.catalogCacheSet(key, &resp)
 	return &resp, nil
 }
 
 func (c *Client) SoftwareList(ctx context.Context, filter SoftwareListFilter) (*SoftwareListResponse, error) {
+	key := fmt.Sprintf("software:%s:%d:%d:%s", filter.Location, filter.ServerID, filter.InstanceID, filter.BillPeriod)
+	if cached, ok := c.catalogCacheGet(key); ok {
+		if resp, ok := cached.(*SoftwareListResponse); ok {
+			return resp, nil
+		}
+	}
+
 	params := url.Values{}
 	params.Set("action", "list")
 	if filter.Location != "" {
@@ -166,5 +241,6 @@ func (c *Client) SoftwareList(ctx context.Context, filter SoftwareListFilter) (*
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("software/list decode: %w", err)
 	}
+	c.catalogCacheSet(key, &resp)
 	return &resp, nil
 }

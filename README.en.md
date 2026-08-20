@@ -195,7 +195,7 @@ Confirm with **`yes`**. Calls `whmcs/request_cancellation` using `cancellation_t
 * Before ordering: `data.hostkey_presets` + `data.hostkey_traffic_plans` with **`instance_id`** = preset id.
 * Dedicated catalogs often have **two rows with the same `name` and different `price`** — use a panel hint (`- FREE`, `(10000 P)`) or `traffic_plan_id`.
 * Set **`disk_mirror`** only when `presets/list` shows **2+ disks** for the preset; omit on single-disk presets (including `bm.v2-promo`).
-* **`extra_order_params`** is closed: any key fails plan validation (order fields are typed attributes).
+* Order fields are typed attributes only (`extra_order_params` was removed).
 * BM / GPU / vGPU, RAID, IPv6, reinstall — [docs/resources/server.md](docs/resources/server.md).
 
 Local build without the Registry: `go install` + [dev_overrides](examples/dev-terraform.rc) — [CONTRIBUTING.md](CONTRIBUTING.md).

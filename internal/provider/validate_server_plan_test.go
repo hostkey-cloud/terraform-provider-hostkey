@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -33,37 +32,16 @@ func TestValidateServerPlanCreateOK(t *testing.T) {
 	}
 }
 
-func TestValidateServerPlanPowerOffHardRequiresOff(t *testing.T) {
+func TestValidateServerPlanNotCreateSkipsRequiredFieldChecks(t *testing.T) {
+	// On update (isCreate=false), missing preset/os/traffic must not error --
+	// those fields are already fixed by the prior create/order and this
+	// check only guards the initial order.
 	plan := serverModel{
-		PowerState:   types.StringValue("on"),
-		PowerOffHard: types.BoolValue(true),
+		LocationName: types.StringValue("NL"),
+		RootPass:     types.StringValue("Abcdef1%"),
 	}
 	diags := validateServerPlan(context.Background(), plan, serverModel{ID: types.StringValue("100")}, false)
-	if !diags.HasError() {
-		t.Fatal("expected error for power_off_hard with power_state=on")
-	}
-}
-
-func TestValidateServerPlanReservedExtraOrderParams(t *testing.T) {
-	for _, key := range []string{"token", "action", "id", "price", "preset", "ipv6", "disk_mirror", "uefi"} {
-		plan := serverModel{
-			ExtraOrderParams: types.MapValueMust(types.StringType, map[string]attr.Value{
-				key: types.StringValue("x"),
-			}),
-		}
-		diags := validateServerPlan(context.Background(), plan, serverModel{ID: types.StringValue("100")}, false)
-		if !diags.HasError() {
-			t.Fatalf("expected error for reserved extra_order_params key %q", key)
-		}
-	}
-}
-
-func TestValidateServerTags(t *testing.T) {
-	longVal := types.StringValue(string(make([]byte, maxTagValueLen+1)))
-	diags := validateServerTags(types.MapValueMust(types.StringType, map[string]attr.Value{
-		"k": longVal,
-	}))
-	if !diags.HasError() {
-		t.Fatal("expected tag value length error")
+	if diags.HasError() {
+		t.Fatalf("unexpected errors on update: %v", diags.Errors())
 	}
 }

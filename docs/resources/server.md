@@ -116,11 +116,11 @@ Same resource and attributes as VPS/dedicated — change **`preset_name`** and p
 - `soft_name` / `soft_id` — marketplace software. Setting `soft_name` alone updates `soft_id` at plan time. Change triggers reinstall.
 - `traffic_plan_name` / `traffic_plan_id` — traffic plan for that preset (VM vs dedic names differ; dedic often needs `- FREE` / `(NNNN P)` hints or an id). Setting `traffic_plan_name` alone updates `traffic_plan_id` at plan time. Change forces replace.
 - `hostname` — server hostname (rename via InvAPI). Optional+Computed: when unset at create, the provider generates a unique `tf-…` hostname for pending-order correlation.
-- `ssh_key` — public key for deploy/reinstall. Change triggers reinstall.
+- `ssh_key` (String, Sensitive) — public key for deploy/reinstall. Change triggers reinstall. Marked sensitive so it is redacted from plan/apply output and logs.
 - `post_install_script`, `own_os`, `root_size`, `disk_mirror`, `no_lvm`, `os_template` — install / disk options for bare metal (`bm.*`, `gpu.*`); changes trigger reinstall. `root_size` is percent of total disk (1–100), not GB. `post_install_script` max 32768 chars; `os_template` max 1024 chars.
 - `deploy_period` — `hourly`, `monthly`, `quarterly`, `semi-annually`, `annually`. Forces replace.
 - `deploy_notify` — email when deploy finishes.
-- `ipv4_amount`, `ipv6_block`, `vlan`, `private_vlan`, `custom_domain`, `deploy_options`, `extra_order_params` — order-time options (mostly force replace). `extra_order_params` is **closed** (any key fails plan validation; use typed attributes instead). `deploy_options` max 8192 chars; `deploy_options` and `os_template` are forwarded as-is — invalid values fail at order/reinstall time. `ipv6_block`: dedicated catalog `virtual=0` and location **NL or US**. InvAPI does not expose a per-preset IPv6 checkbox — set it only when the panel shows it.
+- `ipv4_amount`, `ipv6_block`, `vlan`, `private_vlan`, `custom_domain`, `deploy_options` — order-time options (mostly force replace). `deploy_options` max 8192 chars; `deploy_options` and `os_template` are forwarded as-is — invalid values fail at order/reinstall time. `ipv6_block`: dedicated catalog `virtual=0` and location **NL or US**. InvAPI does not expose a per-preset IPv6 checkbox — set it only when the panel shows it.
 - `ipv4_amount > 1` emits a plan warning because extra IPv4 addresses may be billed.
 - `tags` (Map of String) — user tags only (Hostkey system tags are not synced back).
 - `power_state` — `on` / `off`. Omit to leave power unmanaged.

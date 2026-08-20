@@ -2,149 +2,55 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
-	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
+// validateServerPlan checks the create-only "you must specify a preset/OS/
+// traffic plan" requirements. This intentionally stays in ModifyPlan (rather
+// than moving to ValidateConfig alongside the rest of the static checks in
+// validate_server_config.go) because it is gated on isCreate, which requires
+// comparing against prior state -- state is not available to ValidateConfig.
 func validateServerPlan(_ context.Context, plan, _ serverModel, isCreate bool) diag.Diagnostics {
 	var diags diag.Diagnostics
 
-	if isCreate {
-		hasPreset := (!plan.PresetID.IsNull() && plan.PresetID.ValueInt64() > 0) ||
-			(!plan.PresetName.IsNull() && strings.TrimSpace(plan.PresetName.ValueString()) != "")
-		if !hasPreset {
-			diags.AddAttributeError(
-				path.Root("preset_name"),
-				"Missing preset",
-				"Set preset_name or preset_id when creating a new server.",
-			)
-		}
-
-		ownOS := !plan.OwnOS.IsNull() && plan.OwnOS.ValueBool()
-		hasOS := (!plan.OSID.IsNull() && plan.OSID.ValueInt64() > 0) ||
-			(!plan.OSName.IsNull() && strings.TrimSpace(plan.OSName.ValueString()) != "")
-		hasTemplate := !plan.OSTemplate.IsNull() && strings.TrimSpace(plan.OSTemplate.ValueString()) != ""
-		if !ownOS && !hasOS && !hasTemplate {
-			diags.AddAttributeError(
-				path.Root("os_name"),
-				"Missing OS",
-				"Set os_name or os_id when creating a server, unless own_os=true or os_template is set.",
-			)
-		}
-
-		hasTraffic := (!plan.TrafficPlanID.IsNull() && plan.TrafficPlanID.ValueInt64() > 0) ||
-			(!plan.TrafficPlanName.IsNull() && strings.TrimSpace(plan.TrafficPlanName.ValueString()) != "")
-		if !hasTraffic {
-			diags.AddAttributeError(
-				path.Root("traffic_plan_name"),
-				"Missing traffic plan",
-				"Set traffic_plan_name or traffic_plan_id when creating a server.",
-			)
-		}
-	}
-
-	if !plan.OwnOS.IsNull() && plan.OwnOS.ValueBool() {
-		if !plan.OSName.IsNull() && plan.OSName.ValueString() != "" {
-			diags.AddAttributeWarning(
-				path.Root("own_os"),
-				"own_os ignores OS selection",
-				"own_os=true skips OS install; os_name/os_id are ignored by InvAPI.",
-			)
-		}
-	}
-
-	if !plan.OSTemplate.IsNull() && strings.TrimSpace(plan.OSTemplate.ValueString()) != "" {
-		diags.AddAttributeWarning(
-			path.Root("os_template"),
-			"Custom OS template is opaque and unvalidated",
-			"os_template is forwarded to InvAPI's eq/order_instance as-is; Hostkey API docs do not publish a discoverable list of valid os_template values, so this provider cannot validate it beyond a length cap. os_name/os_id catalog checks do not apply when os_template is set.",
-		)
-	}
-
-	if !plan.DeployOptions.IsNull() && strings.TrimSpace(plan.DeployOptions.ValueString()) != "" {
-		diags.AddAttributeWarning(
-			path.Root("deploy_options"),
-			"Opaque deploy_options is unvalidated",
-			"deploy_options is forwarded to InvAPI's eq/order_instance as-is; Hostkey API docs do not publish its accepted keys/format for this generic string, so this provider cannot validate its contents beyond a length cap. Invalid values fail only at order/reinstall time.",
-		)
-	}
-
-	if !plan.IPv4Amount.IsNull() && !plan.IPv4Amount.IsUnknown() && plan.IPv4Amount.ValueInt64() > 1 {
-		diags.AddAttributeWarning(
-			path.Root("ipv4_amount"),
-			"Extra IPv4 addresses may be billed and are not quota-checked",
-			fmt.Sprintf("ipv4_amount=%d requests additional IPv4 addresses beyond the default single address. Extra IPv4s may incur recurring charges depending on the location/account. The 1-%d bound is a conservative static guess, not a documented InvAPI quota.", plan.IPv4Amount.ValueInt64(), maxIPv4Amount),
-		)
-	}
-
-	if !plan.VLAN.IsNull() && !plan.VLAN.IsUnknown() {
-		diags.AddAttributeWarning(
-			path.Root("vlan"),
-			"vlan is not validated against your account",
-			fmt.Sprintf("vlan=%d is forwarded to InvAPI as-is. No account VLAN list/quota endpoint is published in Hostkey API docs, so this value is only range-checked (>=1), not verified to belong to you. An invalid vlan id fails only at order/reinstall time.", plan.VLAN.ValueInt64()),
-		)
-	}
-	if !plan.PrivateVLAN.IsNull() && !plan.PrivateVLAN.IsUnknown() {
-		diags.AddAttributeWarning(
-			path.Root("private_vlan"),
-			"private_vlan is not validated against your account",
-			fmt.Sprintf("private_vlan=%d is forwarded to InvAPI as-is. Per Hostkey API docs, private_vlan/private_ip must be pre-reserved via ipv4/reserve before use; this provider cannot verify that reservation exists. An unreserved/invalid private_vlan fails only at order time.", plan.PrivateVLAN.ValueInt64()),
-		)
-	}
-
-	if !plan.PowerOffHard.IsNull() && plan.PowerOffHard.ValueBool() {
-		ps := strings.ToLower(strings.TrimSpace(plan.PowerState.ValueString()))
-		if ps != "" && ps != "off" {
-			diags.AddAttributeError(
-				path.Root("power_off_hard"),
-				"power_off_hard requires power_state=off",
-				fmt.Sprintf("power_off_hard is only used when power_state is \"off\"; got %q.", plan.PowerState.ValueString()),
-			)
-		}
-	}
-
-	if !plan.ExtraOrderParams.IsNull() && !plan.ExtraOrderParams.IsUnknown() {
-		raw := map[string]types.String{}
-		_ = plan.ExtraOrderParams.ElementsAs(context.Background(), &raw, false)
-		for k := range raw {
-			diags.AddAttributeError(
-				path.Root("extra_order_params"),
-				"extra_order_params is closed",
-				fmt.Sprintf("key %q is not allowed. All eq/order_instance fields are typed attributes; extra_order_params is not forwarded.", k),
-			)
-		}
-	}
-
-	diags.Append(validateBareMetalOrderOptions(plan)...)
-	diags.Append(validateServerTags(plan.Tags)...)
-
-	return diags
-}
-
-func validateServerTags(tags types.Map) diag.Diagnostics {
-	var diags diag.Diagnostics
-	if tags.IsNull() || tags.IsUnknown() {
+	if !isCreate {
 		return diags
 	}
-	raw := map[string]types.String{}
-	_ = tags.ElementsAs(context.Background(), &raw, false)
-	for k, v := range raw {
-		if strings.TrimSpace(k) == "" {
-			diags.AddAttributeError(path.Root("tags"), "Invalid tag key", "tag keys must not be empty.")
-			continue
-		}
-		if len(k) > maxTagKeyLen {
-			diags.AddAttributeError(path.Root("tags"), "Invalid tag key",
-				fmt.Sprintf("tag key %q exceeds %d characters.", k, maxTagKeyLen))
-		}
-		if !v.IsNull() && len(v.ValueString()) > maxTagValueLen {
-			diags.AddAttributeError(path.Root("tags"), "Invalid tag value",
-				fmt.Sprintf("tag %q value exceeds %d characters.", k, maxTagValueLen))
-		}
+
+	hasPreset := (!plan.PresetID.IsNull() && plan.PresetID.ValueInt64() > 0) ||
+		(!plan.PresetName.IsNull() && strings.TrimSpace(plan.PresetName.ValueString()) != "")
+	if !hasPreset {
+		diags.AddAttributeError(
+			path.Root("preset_name"),
+			"Missing preset",
+			"Set preset_name or preset_id when creating a new server.",
+		)
 	}
+
+	ownOS := !plan.OwnOS.IsNull() && plan.OwnOS.ValueBool()
+	hasOS := (!plan.OSID.IsNull() && plan.OSID.ValueInt64() > 0) ||
+		(!plan.OSName.IsNull() && strings.TrimSpace(plan.OSName.ValueString()) != "")
+	hasTemplate := !plan.OSTemplate.IsNull() && strings.TrimSpace(plan.OSTemplate.ValueString()) != ""
+	if !ownOS && !hasOS && !hasTemplate {
+		diags.AddAttributeError(
+			path.Root("os_name"),
+			"Missing OS",
+			"Set os_name or os_id when creating a server, unless own_os=true or os_template is set.",
+		)
+	}
+
+	hasTraffic := (!plan.TrafficPlanID.IsNull() && plan.TrafficPlanID.ValueInt64() > 0) ||
+		(!plan.TrafficPlanName.IsNull() && strings.TrimSpace(plan.TrafficPlanName.ValueString()) != "")
+	if !hasTraffic {
+		diags.AddAttributeError(
+			path.Root("traffic_plan_name"),
+			"Missing traffic plan",
+			"Set traffic_plan_name or traffic_plan_id when creating a server.",
+		)
+	}
+
 	return diags
 }

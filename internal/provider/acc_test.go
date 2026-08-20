@@ -83,10 +83,20 @@ func TestAccServer_basic(t *testing.T) {
 					"deploy_period",
 					"reboot_trigger", "reinstall_trigger", "poll_interval_seconds",
 					"deploy_notify", "tags", "ssh_key", "post_install_script",
-					"hostname", "deploy_options", "extra_order_params",
+					"hostname", "deploy_options",
 					"custom_domain", "vlan", "private_vlan", "ipv4_amount",
 					"root_size", "disk_mirror", "no_lvm", "ipv6_block", "own_os", "os_template",
 				},
+			},
+			// TP-01: re-apply the exact same config right after
+			// import and assert Terraform sees no diff. This is the regression
+			// guard for "import must not force replacement" -- ImportStateVerify
+			// above only checks the imported *values*, not whether a subsequent
+			// plan is empty, so it structurally could not have caught import-forced replace.
+			{
+				Config:             testAccServerConfig(location, preset, rootPass),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: false,
 			},
 		},
 	})
@@ -215,4 +225,97 @@ resource "hostkey_dns_domain" "test" {
 			},
 		},
 	})
+}
+
+// TP-09: hostkey_server_ip previously had zero acceptance
+// coverage. Requires an existing server id (HOSTKEY_ACC_SERVER_ID) since
+// server_ip attaches to an already-ordered server rather than ordering one.
+func TestAccServerIP_basic(t *testing.T) {
+	testAccPreCheck(t)
+
+	serverID := os.Getenv("HOSTKEY_ACC_SERVER_ID")
+	if serverID == "" {
+		t.Skip("set HOSTKEY_ACC_SERVER_ID to an existing server id to run hostkey_server_ip acceptance tests")
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccServerIPConfig(serverID),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrSet("hostkey_server_ip.test", "id"),
+					resource.TestCheckResourceAttrSet("hostkey_server_ip.test", "ip"),
+					resource.TestCheckResourceAttr("hostkey_server_ip.test", "server_id", serverID),
+				),
+			},
+			{
+				ResourceName:      "hostkey_server_ip.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func testAccServerIPConfig(serverID string) string {
+	return fmt.Sprintf(`
+provider "hostkey" {
+  region = "RU"
+}
+
+resource "hostkey_server_ip" "test" {
+  server_id = %s
+}
+`, serverID)
+}
+
+// TP-10: hostkey_dns_record previously had zero acceptance
+// coverage. Reuses HOSTKEY_ACC_DNS_DOMAIN (already required for
+// TestAccDNSDomain_basic) as the zone to add a record to.
+func TestAccDNSRecord_basic(t *testing.T) {
+	testAccPreCheck(t)
+
+	domain := os.Getenv("HOSTKEY_ACC_DNS_DOMAIN")
+	if domain == "" {
+		t.Skip("set HOSTKEY_ACC_DNS_DOMAIN to a disposable zone name you can create/delete in pdns")
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccDNSRecordConfig(domain, "tf-acc", "A", "203.0.113.10", 3600),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrSet("hostkey_dns_record.test", "id"),
+					resource.TestCheckResourceAttr("hostkey_dns_record.test", "zone", domain),
+					resource.TestCheckResourceAttr("hostkey_dns_record.test", "name", "tf-acc"),
+					resource.TestCheckResourceAttr("hostkey_dns_record.test", "type", "A"),
+					resource.TestCheckResourceAttr("hostkey_dns_record.test", "content", "203.0.113.10"),
+					resource.TestCheckResourceAttr("hostkey_dns_record.test", "ttl", "3600"),
+				),
+			},
+			{
+				ResourceName:      "hostkey_dns_record.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func testAccDNSRecordConfig(zone, name, typ, content string, ttl int) string {
+	return fmt.Sprintf(`
+provider "hostkey" {
+  region = "RU"
+}
+
+resource "hostkey_dns_record" "test" {
+  zone    = %q
+  name    = %q
+  type    = %q
+  content = %q
+  ttl     = %d
+}
+`, zone, name, typ, content, ttl)
 }
