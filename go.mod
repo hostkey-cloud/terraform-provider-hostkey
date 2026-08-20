@@ -1,6 +1,6 @@
 module github.com/hostkey-cloud/terraform-provider-hostkey
 
-go 1.26.4
+go 1.26.6
 
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
