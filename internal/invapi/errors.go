@@ -2,8 +2,10 @@ package invapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 var (
@@ -28,6 +30,27 @@ func (e *APIError) Error() string {
 	default:
 		return fmt.Sprintf("invapi error: %s", redactSecrets(e.Body))
 	}
+}
+
+// IsNotFound reports whether err means the InvAPI object is gone (safe to drop
+// Terraform state). Matches ErrNotFound and common InvAPI business envelopes.
+func IsNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrNotFound) {
+		return true
+	}
+	var api *APIError
+	if errors.As(err, &api) {
+		blob := strings.ToLower(strings.TrimSpace(api.Message + " " + api.Result + " " + api.Body))
+		return strings.Contains(blob, "not found") ||
+			strings.Contains(blob, "no such") ||
+			strings.Contains(blob, "unknown server") ||
+			strings.Contains(blob, "server not exist") ||
+			strings.Contains(blob, "does not exist")
+	}
+	return false
 }
 
 func decodeAPIError(body []byte) error {

@@ -8,6 +8,8 @@ import (
 )
 
 var hddCountPrefix = regexp.MustCompile(`(?i)^\s*(\d+)\s*[x×]`)
+var hddCapacityPair = regexp.MustCompile(`(?i)(\d+)\s*[x×]\s*(\d+)`)
+var hddPlainNumber = regexp.MustCompile(`^\s*(\d+)\s*$`)
 
 // DiskCount infers physical drive count from presets/list hdd + description.
 // InvAPI does not send a disk_count field: hdd is either "2x960" or a capacity like "1000".
@@ -53,6 +55,25 @@ func nxPrefix(s string) int {
 		return 0
 	}
 	return n
+}
+
+// DiskCapacityGB extracts the usable per-disk capacity in GB from a catalog
+// hdd string, e.g. "2x960" -> 960, "1000" -> 1000. InvAPI does not expose a
+// dedicated capacity field, so this is a best-effort parse of the same hdd
+// string used by DiskCount; ok=false means the format was not recognized and
+// callers must not assume a capacity limit (to avoid false-positive errors).
+func DiskCapacityGB(hdd string) (int, bool) {
+	if m := hddCapacityPair.FindStringSubmatch(hdd); m != nil {
+		if n, err := strconv.Atoi(m[2]); err == nil && n > 0 {
+			return n, true
+		}
+	}
+	if m := hddPlainNumber.FindStringSubmatch(strings.TrimSpace(hdd)); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+			return n, true
+		}
+	}
+	return 0, false
 }
 
 // ValidateDiskMirror checks InvAPI disk_mirror against catalog disk count.

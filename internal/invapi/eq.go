@@ -15,6 +15,9 @@ func (c *Client) EQShow(ctx context.Context, serverID int) (*ServerShowResponse,
 
 	body, err := c.PostForm(ctx, "eq", params)
 	if err != nil {
+		if IsNotFound(err) {
+			return nil, fmt.Errorf("eq/show id=%d: %w", serverID, ErrNotFound)
+		}
 		return nil, fmt.Errorf("eq/show: %w", err)
 	}
 

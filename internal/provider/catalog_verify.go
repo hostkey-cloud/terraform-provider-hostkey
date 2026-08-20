@@ -283,6 +283,11 @@ func validatePlanAgainstCatalogPreset(plan serverModel, p invapi.Preset) error {
 			return fmt.Errorf("ipv6_block is only valid on dedicated presets (catalog virtual=0); %s is virtual=%d", p.Name, p.Virtual)
 		}
 	}
+	if !plan.RootSize.IsNull() && !plan.RootSize.IsUnknown() && plan.RootSize.ValueInt64() > 0 {
+		if capacityGB, ok := invapi.DiskCapacityGB(p.HDD.String()); ok && int(plan.RootSize.ValueInt64()) > capacityGB {
+			return fmt.Errorf("root_size %d GB exceeds preset %q disk capacity (~%d GB per disk, parsed from catalog hdd=%q); this configuration is not available via presets/list and would be rejected (or silently clamped) by InvAPI", plan.RootSize.ValueInt64(), p.Name, capacityGB, p.HDD.String())
+		}
+	}
 	return nil
 }
 

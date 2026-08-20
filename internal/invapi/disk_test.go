@@ -51,3 +51,23 @@ func TestValidateDiskMirror(t *testing.T) {
 		t.Fatal("disk_mirror on VM must error")
 	}
 }
+
+func TestDiskCapacityGB(t *testing.T) {
+	cases := []struct {
+		hdd  string
+		want int
+		ok   bool
+	}{
+		{"2x960", 960, true},
+		{"1000", 1000, true},
+		{"4x1920", 1920, true},
+		{"", 0, false},
+		{"nvme", 0, false},
+	}
+	for _, tc := range cases {
+		got, ok := DiskCapacityGB(tc.hdd)
+		if ok != tc.ok || got != tc.want {
+			t.Errorf("DiskCapacityGB(%q)=(%d,%v) want (%d,%v)", tc.hdd, got, ok, tc.want, tc.ok)
+		}
+	}
+}

@@ -440,7 +440,16 @@ func (r *serverResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 		resp.Diagnostics.AddError("Catalog name resolve failed", err.Error())
 		return
 	}
-	if err := r.verifyOrderCatalog(ctx, &plan); err != nil {
+	if plan.LocationName.IsUnknown() {
+		// location_name (and everything resolved from it) cannot be checked against
+		// the Hostkey catalog while unknown at plan time. Create/Update re-run
+		// catalog checks once it is known.
+		resp.Diagnostics.AddAttributeWarning(
+			path.Root("location_name"),
+			"Catalog validation deferred until apply",
+			"location_name is unknown at plan time, so Terraform cannot verify preset/OS/software/traffic-plan availability or root_size against disk capacity right now. If the resolved combination is not available in the Hostkey catalog, apply will fail with a clear error instead of silently placing an invalid order.",
+		)
+	} else if err := r.verifyOrderCatalog(ctx, &plan); err != nil {
 		resp.Diagnostics.AddError("Catalog verification failed", err.Error())
 		return
 	}
@@ -657,6 +666,45 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	// eq/order_instance has been observed to intermittently not apply hostname
+	// even though the request included it. Detect mismatch and self-heal via
+	// eq/rename_server instead of silently persisting a wrong hostname in state.
+	if want := strings.TrimSpace(plan.Hostname.ValueString()); !plan.Hostname.IsNull() && want != "" &&
+		!strings.EqualFold(want, strings.TrimSpace(state.Hostname.ValueString())) {
+		tflog.Warn(ctx, "hostname not applied by order_instance; attempting eq/rename_server", map[string]any{
+			"server_id": serverID,
+			"want":      want,
+			"got":       state.Hostname.ValueString(),
+		})
+		if err := r.client.EQRenameServer(ctx, serverID, want); err != nil {
+			resp.Diagnostics.AddWarning(
+				"Hostname was not applied by order_instance and automatic fix-up failed",
+				fmt.Sprintf("InvAPI reported hostname %q instead of the requested %q, and the automatic eq/rename_server fix-up failed: %v. The server was created successfully; only the hostname metadata is affected. Fix it manually in the panel or re-apply.", state.Hostname.ValueString(), want, err),
+			)
+		} else if refreshed, rd := r.readServerState(ctx, serverID, plan); !rd.HasError() {
+			resp.Diagnostics.Append(rd...)
+			state.Hostname = refreshed.Hostname
+			if !strings.EqualFold(strings.TrimSpace(state.Hostname.ValueString()), want) {
+				resp.Diagnostics.AddWarning(
+					"Hostname still does not match after automatic fix-up",
+					fmt.Sprintf("Requested hostname %q; InvAPI now reports %q after eq/rename_server. Verify manually in the panel.", want, state.Hostname.ValueString()),
+				)
+			}
+		} else {
+			resp.Diagnostics.Append(rd...)
+		}
+	}
+
+	// ssh_key cannot be verified via any InvAPI field; it has been observed to
+	// intermittently not get written even when order_instance accepted it.
+	if !plan.SSHKey.IsNull() && strings.TrimSpace(plan.SSHKey.ValueString()) != "" {
+		resp.Diagnostics.AddWarning(
+			"Verify SSH key access before relying on it",
+			"ssh_key was sent to InvAPI, but eq/show exposes no field confirming the key was written to authorized_keys on the deployed server, and this has been observed to intermittently fail even on an unchanged config (root_pass still applies correctly in that case). Test SSH login with the key before removing other access. If the key is missing, set reinstall_trigger to force a clean reinstall that resends ssh_key, or fall back to root_pass.",
+		)
+	}
+
 	if orderResp.Invoice > 0 {
 		state.Invoice = types.Int64Value(int64(orderResp.Invoice))
 	}
@@ -717,6 +765,16 @@ func (r *serverResource) Read(ctx context.Context, req resource.ReadRequest, res
 	serverID, err := strconv.Atoi(id)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid server id", err.Error())
+		return
+	}
+
+	if gone, goneErr := r.serverGone(ctx, serverID); goneErr != nil {
+		resp.Diagnostics.AddError("Read server failed", goneErr.Error())
+		return
+	} else if gone {
+		// Without this, a server cancelled/deleted outside Terraform left the
+		// resource in state forever with a repeated Read error on every plan.
+		resp.State.RemoveResource(ctx)
 		return
 	}
 
@@ -1010,6 +1068,18 @@ func (r *serverResource) readServerState(ctx context.Context, serverID int, temp
 	state := template
 	state.ID = types.StringValue(strconv.Itoa(serverID))
 	state.MainIPv4 = types.StringValue(invapi.MainIPv4(show))
+	// Prefer the live hostname from eq/show when available so InvAPI drift
+	// (order_instance intermittently skipping hostname) is visible in state.
+	if live := invapi.ShowHostname(show); live != "" {
+		want := strings.TrimSpace(template.Hostname.ValueString())
+		if !template.Hostname.IsNull() && !template.Hostname.IsUnknown() && want != "" && !strings.EqualFold(want, strings.TrimSpace(live)) {
+			diags.AddWarning(
+				"Live hostname does not match requested hostname",
+				fmt.Sprintf("hostname %q was requested, but InvAPI eq/show reports the live server hostname as %q. This has been observed to happen intermittently on Hostkey's side even with an unchanged config. Terraform is recording the live value in state to avoid masking this drift; the next apply will attempt eq/rename_server to fix it, or update hostname in config to %q to accept it.", want, live, live),
+			)
+		}
+		state.Hostname = types.StringValue(live)
+	}
 	if st := serverStatus(show); st != "" {
 		state.Status = types.StringValue(st)
 	} else {
@@ -1034,6 +1104,20 @@ func (r *serverResource) readServerState(ctx context.Context, serverID int, temp
 	}
 
 	return state, diags
+}
+
+// serverGone reports whether InvAPI no longer knows about serverID (safe to
+// drop from Terraform state), distinguishing that from a transient or auth
+// error, which must still surface as a Read error.
+func (r *serverResource) serverGone(ctx context.Context, serverID int) (bool, error) {
+	_, err := r.client.EQShow(ctx, serverID)
+	if err != nil {
+		if invapi.IsNotFound(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
 }
 
 func powerStateConfigured(m serverModel) bool {

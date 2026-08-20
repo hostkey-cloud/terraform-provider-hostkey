@@ -62,6 +62,16 @@ func newcomerIDs(known map[int]struct{}, ids []int) []int {
 	return out
 }
 
+// ShowHostname is the exported form of showHostname for callers outside this
+// package (e.g. resource Read/Create) that need to compare the live server
+// hostname reported by eq/show against the hostname that was requested.
+// InvAPI's server_data shape is inconsistent, so this is a best-effort
+// recursive lookup, not a guaranteed field; an empty string means "could not
+// determine the live hostname from this response", not "no hostname".
+func ShowHostname(show *ServerShowResponse) string {
+	return showHostname(show)
+}
+
 func showHostname(show *ServerShowResponse) string {
 	if show == nil || len(show.ServerData) == 0 {
 		return ""

@@ -12,10 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hostkey_server`: `main_ipv4` and `status` use `UseStateForUnknown`, so a no-op plan no longer perpetually shows `1 to change` with only those fields as `(known after apply)`.
 - `hostkey_server`: when both `os_name`/`soft_name`/`traffic_plan_name` and an explicit conflicting `*_id` are set in HCL, plan fails with a clear catalog conflict message instead of `Provider produced invalid plan`.
 - `hostkey_server`: pending deploy timeout on Update now emits a **warning** (state kept as `pending:<invoice>`), matching Create — avoids failed apply / replace pressure that could drop a paid order from state on destroy.
+- `hostkey_server`: after create, if InvAPI did not apply `hostname`, provider attempts `eq/rename_server` and warns on residual drift; Read records live hostname from `eq/show` when available.
+- `hostkey_server`: Read removes the resource from state when InvAPI reports the server as not found (cancelled/deleted outside Terraform), instead of failing every plan.
+- `hostkey_server`: plan warns when `location_name` is unknown so catalog checks are deferred to apply (instead of a silent skip).
+- Catalog: `root_size` rejected when it exceeds per-disk capacity parsed from preset `hdd` (e.g. `2x960` → 960 GB).
 
 ### Changed
 
 - Pending wait polls log InvAPI status hints via `tflog` (`TF_LOG=INFO`) — Terraform CLI still hardcodes the `Still creating...` line and cannot show custom status there.
+- Create with `ssh_key` emits a warning to verify key login (InvAPI does not expose authorized_keys confirmation).
 
 ## [0.1.6] - 2026-08-19
 
