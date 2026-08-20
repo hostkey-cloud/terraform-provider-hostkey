@@ -65,7 +65,7 @@ Dedicated presets use the same resource. Catalog names differ from the control-p
 
 Bare names like `1Gbps unmetered` can match **two** InvAPI rows (different prices). Prefer a price hint (`- FREE`, `(10000 P)`) or `traffic_plan_id`. Confirm with [`hostkey_traffic_plans`](../data-sources/traffic_plans.md) (`instance_id` = preset id).
 
-Disk layout (panel «Disk configuration» / «Конфигурация дисков») maps to `disk_mirror` and `no_lvm`. Omit `root_size` for «100% от загрузочного диска».
+Disk layout (panel «Disk configuration» / «Конфигурация дисков») maps to `disk_mirror` and `no_lvm`. Omit `root_size` for «100% от загрузочного диска» (`root_size` is a **percent** 1–100, not GB).
 
 Set `disk_mirror` only when InvAPI `presets/list` shows **2+ disks** (`hdd` like `2x960` or description `/2x1TB`). One-disk presets (`hdd=1000`, `/1TB NVMe`) leave panel RAID type empty — **omit** `disk_mirror`; sending `hba` or RAID is not processed. `raid1`/`raid0` need two disks; `raid10` needs four.
 
@@ -82,7 +82,7 @@ resource "hostkey_server" "dedic" {
 
   # Catalog shows 1 disk — omit disk_mirror (panel RAID type is empty).
   no_lvm      = true  # classic partitions instead of LVM
-  # root_size = 480   # GB; omit = full boot disk
+  # root_size = 50    # percent of disk; omit = 100% (full boot disk)
 
   # Network (panel «Сетевые настройки»)
   ipv4_amount = 1       # default 1 IPv4
@@ -115,9 +115,9 @@ Same resource and attributes as VPS/dedicated — change **`preset_name`** and p
 - `os_name` / `os_id` — OS. Setting `os_name` alone updates `os_id` at plan time. If both are set in HCL and disagree, plan fails with a clear conflict error (remove the stale `os_id` or align it). Change triggers reinstall.
 - `soft_name` / `soft_id` — marketplace software. Setting `soft_name` alone updates `soft_id` at plan time. Change triggers reinstall.
 - `traffic_plan_name` / `traffic_plan_id` — traffic plan for that preset (VM vs dedic names differ; dedic often needs `- FREE` / `(NNNN P)` hints or an id). Setting `traffic_plan_name` alone updates `traffic_plan_id` at plan time. Change forces replace.
-- `hostname` — server hostname (rename via InvAPI).
+- `hostname` — server hostname (rename via InvAPI). Optional+Computed: when unset at create, the provider generates a unique `tf-…` hostname for pending-order correlation.
 - `ssh_key` — public key for deploy/reinstall. Change triggers reinstall.
-- `post_install_script`, `own_os`, `root_size`, `disk_mirror`, `no_lvm`, `os_template` — install / disk options for bare metal (`bm.*`, `gpu.*`); changes trigger reinstall. `post_install_script` max 32768 chars; `os_template` max 1024 chars.
+- `post_install_script`, `own_os`, `root_size`, `disk_mirror`, `no_lvm`, `os_template` — install / disk options for bare metal (`bm.*`, `gpu.*`); changes trigger reinstall. `root_size` is percent of total disk (1–100), not GB. `post_install_script` max 32768 chars; `os_template` max 1024 chars.
 - `deploy_period` — `hourly`, `monthly`, `quarterly`, `semi-annually`, `annually`. Forces replace.
 - `deploy_notify` — email when deploy finishes.
 - `ipv4_amount`, `ipv6_block`, `vlan`, `private_vlan`, `custom_domain`, `deploy_options`, `extra_order_params` — order-time options (mostly force replace). `extra_order_params` is **closed** (any key fails plan validation; use typed attributes instead). `deploy_options` max 8192 chars; `deploy_options` and `os_template` are forwarded as-is — invalid values fail at order/reinstall time. `ipv6_block`: dedicated catalog `virtual=0` and location **NL or US**. InvAPI does not expose a per-preset IPv6 checkbox — set it only when the panel shows it.

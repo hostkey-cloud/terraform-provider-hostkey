@@ -24,9 +24,9 @@ type APIError struct {
 func (e *APIError) Error() string {
 	switch {
 	case e.Message != "":
-		return fmt.Sprintf("invapi error (code=%d): %s", e.Code, e.Message)
+		return fmt.Sprintf("invapi error (code=%d): %s", e.Code, redactSecrets(e.Message))
 	case e.Result != "" && e.Result != "OK":
-		return fmt.Sprintf("invapi error: result=%s", e.Result)
+		return fmt.Sprintf("invapi error: result=%s", redactSecrets(e.Result))
 	default:
 		return fmt.Sprintf("invapi error: %s", redactSecrets(e.Body))
 	}
@@ -66,7 +66,7 @@ func decodeAPIError(body []byte) error {
 
 	if resultErr := resultFieldError(envelope.Result); resultErr != nil {
 		if apiErr, ok := resultErr.(*APIError); ok && apiErr.Message == "" && envelope.Error != "" {
-			apiErr.Message = envelope.Error
+			apiErr.Message = redactSecrets(envelope.Error)
 		}
 		return resultErr
 	}
@@ -75,6 +75,7 @@ func decodeAPIError(body []byte) error {
 	if msg == "" {
 		msg = envelope.Error
 	}
+	msg = redactSecrets(msg)
 	if len(envelope.Code) > 0 && string(envelope.Code) != "0" && string(envelope.Code) != "null" {
 		return &APIError{Message: msg, Body: redactSecrets(string(body)), Code: codeAsInt(envelope.Code)}
 	}
@@ -94,14 +95,14 @@ func resultFieldError(raw json.RawMessage) error {
 		if s == "OK" || s == "" {
 			return nil
 		}
-		return &APIError{Result: s, Body: string(raw)}
+		return &APIError{Result: redactSecrets(s), Body: redactSecrets(string(raw))}
 	}
 	var n float64
 	if err := json.Unmarshal(raw, &n); err == nil {
 		if int(n) == 0 || int(n) == 1 {
 			return nil
 		}
-		return &APIError{Code: int(n), Body: string(raw)}
+		return &APIError{Code: int(n), Body: redactSecrets(string(raw))}
 	}
 	return nil
 }

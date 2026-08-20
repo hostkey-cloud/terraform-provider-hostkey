@@ -60,24 +60,39 @@ func validateServerPlan(_ context.Context, plan, _ serverModel, isCreate bool) d
 	if !plan.OSTemplate.IsNull() && strings.TrimSpace(plan.OSTemplate.ValueString()) != "" {
 		diags.AddAttributeWarning(
 			path.Root("os_template"),
-			"Custom OS template",
-			"os_template uses InvAPI's custom install path; os_name/os_id catalog checks may not apply.",
+			"Custom OS template is opaque and unvalidated",
+			"os_template is forwarded to InvAPI's eq/order_instance as-is; Hostkey API docs do not publish a discoverable list of valid os_template values, so this provider cannot validate it beyond a length cap. os_name/os_id catalog checks do not apply when os_template is set.",
 		)
 	}
 
 	if !plan.DeployOptions.IsNull() && strings.TrimSpace(plan.DeployOptions.ValueString()) != "" {
 		diags.AddAttributeWarning(
 			path.Root("deploy_options"),
-			"Opaque deploy_options",
-			"deploy_options is forwarded to InvAPI as-is; invalid values fail at order/reinstall time.",
+			"Opaque deploy_options is unvalidated",
+			"deploy_options is forwarded to InvAPI's eq/order_instance as-is; Hostkey API docs do not publish its accepted keys/format for this generic string, so this provider cannot validate its contents beyond a length cap. Invalid values fail only at order/reinstall time.",
 		)
 	}
 
 	if !plan.IPv4Amount.IsNull() && !plan.IPv4Amount.IsUnknown() && plan.IPv4Amount.ValueInt64() > 1 {
 		diags.AddAttributeWarning(
 			path.Root("ipv4_amount"),
-			"Extra IPv4 addresses may be billed",
-			fmt.Sprintf("ipv4_amount=%d requests additional IPv4 addresses beyond the default single address. Extra IPv4s may incur recurring charges depending on the location/account.", plan.IPv4Amount.ValueInt64()),
+			"Extra IPv4 addresses may be billed and are not quota-checked",
+			fmt.Sprintf("ipv4_amount=%d requests additional IPv4 addresses beyond the default single address. Extra IPv4s may incur recurring charges depending on the location/account. The 1-%d bound is a conservative static guess, not a documented InvAPI quota.", plan.IPv4Amount.ValueInt64(), maxIPv4Amount),
+		)
+	}
+
+	if !plan.VLAN.IsNull() && !plan.VLAN.IsUnknown() {
+		diags.AddAttributeWarning(
+			path.Root("vlan"),
+			"vlan is not validated against your account",
+			fmt.Sprintf("vlan=%d is forwarded to InvAPI as-is. No account VLAN list/quota endpoint is published in Hostkey API docs, so this value is only range-checked (>=1), not verified to belong to you. An invalid vlan id fails only at order/reinstall time.", plan.VLAN.ValueInt64()),
+		)
+	}
+	if !plan.PrivateVLAN.IsNull() && !plan.PrivateVLAN.IsUnknown() {
+		diags.AddAttributeWarning(
+			path.Root("private_vlan"),
+			"private_vlan is not validated against your account",
+			fmt.Sprintf("private_vlan=%d is forwarded to InvAPI as-is. Per Hostkey API docs, private_vlan/private_ip must be pre-reserved via ipv4/reserve before use; this provider cannot verify that reservation exists. An unreserved/invalid private_vlan fails only at order time.", plan.PrivateVLAN.ValueInt64()),
 		)
 	}
 

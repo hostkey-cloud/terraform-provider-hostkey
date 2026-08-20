@@ -2,10 +2,13 @@ package provider
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
@@ -13,7 +16,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -36,6 +38,19 @@ const (
 	defaultDeleteTimeout = 30 * time.Minute
 	pollInterval         = 15 * time.Second
 )
+
+// createOrderMu serializes the pre-order eq/list snapshot and eq/order_instance
+// across concurrent hostkey_server Create() calls in this process (AUD-005).
+// Only the short snapshot+order window is locked — not the long deploy wait.
+var createOrderMu sync.Mutex
+
+func defaultUniqueHostname() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("tf-%d", time.Now().UnixNano())
+	}
+	return "tf-" + hex.EncodeToString(b)
+}
 
 type serverResource struct {
 	client *invapi.Client
@@ -95,7 +110,7 @@ func (r *serverResource) Metadata(_ context.Context, req resource.MetadataReques
 func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a Hostkey server ordered via InvAPI eq/order_instance. " +
-			"Changing OS/software/root_pass/ssh_key (and related install fields) reinstalls the same server id — data is wiped. " +
+			"Changing OS/software/root_pass/ssh_key (and related install fields) reinstalls the same server id - data is wiped. " +
 			"Preset/location/traffic/billing changes still force replace (new order).",
 		Blocks: map[string]schema.Block{
 			"timeouts": timeouts.Block(ctx, timeouts.Opts{
@@ -128,14 +143,14 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Description: "Preset name from the catalog (e.g. vm.pico). Looks up preset_id if not set.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceOnKnownStringChange(),
 				},
 			},
 			"location_name": schema.StringAttribute{
 				Description: "DC location code: NL, US, FI, DE, RU, etc. (not the same as provider region COM/RU).",
 				Required:    true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceOnKnownStringChange(),
 				},
 				Validators: []validator.String{
 					locationCodeValidator(),
@@ -187,12 +202,16 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Description: "Traffic plan name from the catalog (e.g. 3 TB / 1 Gbps VM). At plan time the provider syncs traffic_plan_id from this name. Changing preset/location/traffic forces replace (new order).",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceOnKnownStringChange(),
 				},
 			},
 			"hostname": schema.StringAttribute{
-				Description: "Server hostname.",
+				Description: "Server hostname. If omitted, the provider generates a unique default (tf-<random>) at create time so concurrent hostkey_server creates in the same apply can be told apart by hostname; InvAPI's own default hostname is not known until after the order resolves.",
 				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 				Validators: []validator.String{
 					hostnameValidator(),
 					stringMaxLen("hostname", maxHostnameLen),
@@ -224,7 +243,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Description: "Billing period: hourly, monthly, quarterly, semi-annually, annually. Omit to use InvAPI default.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceOnKnownStringChange(),
 				},
 				Validators: []validator.String{
 					oneOfStrings("deploy_period", "hourly", "monthly", "quarterly", "semi-annually", "annually"),
@@ -239,10 +258,10 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Optional:    true,
 			},
 			"root_size": schema.Int64Attribute{
-				Description: "Root partition size in GB for the OS volume. Omit to use the full boot disk (panel: 100% of boot disk). Change triggers reinstall.",
+				Description: "Root partition size as a PERCENTAGE of total disk space (1-100, InvAPI default 100 = whole boot disk), not GB. Change triggers reinstall.",
 				Optional:    true,
 				Validators: []validator.Int64{
-					int64Between("root_size", minRootSizeGB, maxRootSizeGB),
+					int64Between("root_size", minRootSizePercent, maxRootSizePercent),
 				},
 			},
 			"disk_mirror": schema.StringAttribute{
@@ -260,14 +279,14 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Description: "Request IPv6 /64 at order time for dedicated presets (catalog virtual=0) in NL/US. InvAPI presets/list does not expose a per-preset IPv6 checkbox; omit unless the order form shows it. Maps to InvAPI ipv6=1. Forces replace.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.Bool{
-					boolplanmodifier.RequiresReplace(),
+					requiresReplaceOnKnownBoolChange(),
 				},
 			},
 			"ipv4_amount": schema.Int64Attribute{
 				Description: "Number of IPv4 addresses to order.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.Int64{
-					int64planmodifier.RequiresReplace(),
+					requiresReplaceOnKnownInt64Change(),
 				},
 				Validators: []validator.Int64{
 					int64Between("ipv4_amount", minIPv4Amount, maxIPv4Amount),
@@ -277,7 +296,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Description: "Private VLAN ID (InvAPI vlan).",
 				Optional:    true,
 				PlanModifiers: []planmodifier.Int64{
-					int64planmodifier.RequiresReplace(),
+					requiresReplaceOnKnownInt64Change(),
 				},
 				Validators: []validator.Int64{
 					int64AtLeast("vlan", 1),
@@ -287,7 +306,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Description: "Private VLAN ID (InvAPI private_vlan).",
 				Optional:    true,
 				PlanModifiers: []planmodifier.Int64{
-					int64planmodifier.RequiresReplace(),
+					requiresReplaceOnKnownInt64Change(),
 				},
 				Validators: []validator.Int64{
 					int64AtLeast("private_vlan", 1),
@@ -297,7 +316,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Description: "Custom domain for the server.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceOnKnownStringChange(),
 				},
 			},
 			"os_template": schema.StringAttribute{
@@ -311,7 +330,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Description: "InvAPI deploy_options string (billing/location options when required).",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					requiresReplaceOnKnownStringChange(),
 				},
 				Validators: []validator.String{
 					stringMaxLen("deploy_options", maxDeployOptionsLen),
@@ -326,7 +345,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"tags": schema.MapAttribute{
-				Description: "User tags on the server (tag name → value). Synced via tags/add and tags/remove after the server exists.",
+				Description: "User tags on the server (tag name в†’ value). Synced via tags/add and tags/remove after the server exists.",
 				ElementType: types.StringType,
 				Optional:    true,
 			},
@@ -385,7 +404,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				Optional:    true,
 			},
 			"reboot_trigger": schema.StringAttribute{
-				Description: "One-shot reboot (eq/reboot): change this string (e.g. timestamp) to reboot on apply. Not a desired-state — value is kept after reboot.",
+				Description: "One-shot reboot (eq/reboot): change this string (e.g. timestamp) to reboot on apply. Not a desired-state - value is kept after reboot.",
 				Optional:    true,
 			},
 			"reinstall_trigger": schema.StringAttribute{
@@ -447,7 +466,7 @@ func (r *serverResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 		resp.Diagnostics.AddAttributeWarning(
 			path.Root("location_name"),
 			"Catalog validation deferred until apply",
-			"location_name is unknown at plan time, so Terraform cannot verify preset/OS/software/traffic-plan availability or root_size against disk capacity right now. If the resolved combination is not available in the Hostkey catalog, apply will fail with a clear error instead of silently placing an invalid order.",
+			"location_name is unknown at plan time, so Terraform cannot verify preset/OS/software/traffic-plan availability right now. If the resolved combination is not available in the Hostkey catalog, apply will fail with a clear error instead of silently placing an invalid order.",
 		)
 	} else if err := r.verifyOrderCatalog(ctx, &plan); err != nil {
 		resp.Diagnostics.AddError("Catalog verification failed", err.Error())
@@ -464,7 +483,7 @@ func (r *serverResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 	if !req.State.Raw.IsNull() && needsReinstall(plan, state) {
 		resp.Diagnostics.AddWarning(
 			"Server reinstall will destroy disk data",
-			"This plan changes install-time fields (OS, software, root password, SSH key, disk layout, etc.). Apply runs eq/order_instance reinstall on the same server id — the disk is wiped. This is not a metadata-only update like tags or hostname.",
+			"This plan changes install-time fields (OS, software, root password, SSH key, disk layout, etc.). Apply runs eq/order_instance reinstall on the same server id - the disk is wiped. This is not a metadata-only update like tags or hostname.",
 		)
 		// Make the most common destructive change obvious in the diff.
 		// Terraform still shows `update in-place` for reinstall, so we use attribute-level warnings.
@@ -522,6 +541,15 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
+	// Default to a unique hostname when unset so concurrent Create() calls can
+	// be told apart during pending-order correlation.
+	if plan.Hostname.IsNull() || plan.Hostname.IsUnknown() || strings.TrimSpace(plan.Hostname.ValueString()) == "" {
+		plan.Hostname = types.StringValue(defaultUniqueHostname())
+		tflog.Info(ctx, "Generated unique default hostname for pending-order correlation", map[string]any{
+			"hostname": plan.Hostname.ValueString(),
+		})
+	}
+
 	if err := r.resolveOrderIDs(ctx, &plan, &plan); err != nil {
 		resp.Diagnostics.AddError("Catalog name resolve failed", err.Error())
 		return
@@ -553,8 +581,12 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	orderReq := buildOrderRequest(plan)
 
+	// Serialize pre-order snapshot + order_instance across concurrent Creates.
+	// Unlock as soon as order_instance returns (do not hold during deploy wait).
+	createOrderMu.Lock()
 	beforeList, err := r.client.EQList(ctx, nil)
 	if err != nil {
+		createOrderMu.Unlock()
 		resp.Diagnostics.AddError(
 			"Cannot snapshot existing servers",
 			err.Error()+"; refusing to call order_instance without a pre-order eq/list snapshot.",
@@ -563,6 +595,7 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 	known, err := snapshotKnownIDs(beforeList)
 	if err != nil {
+		createOrderMu.Unlock()
 		resp.Diagnostics.AddError("Cannot snapshot existing servers", err.Error())
 		return
 	}
@@ -586,6 +619,7 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 	})
 
 	orderResp, err := r.client.EQOrderInstance(ctx, orderReq)
+	createOrderMu.Unlock()
 	if err != nil {
 		resp.Diagnostics.AddError("Order failed", err.Error())
 		return
@@ -858,7 +892,7 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 			// Warning (not Error): keep apply non-tainted and resume-friendly, same as Create.
 			resp.Diagnostics.AddWarning(
 				"Deploy still in progress",
-				fmt.Sprintf("%v. State kept as %s — re-run apply to wait for this invoice (will not place a new order).", err, state.ID.ValueString()),
+				fmt.Sprintf("%v. State kept as %s - re-run apply to wait for this invoice (will not place a new order).", err, state.ID.ValueString()),
 			)
 			return
 		}
@@ -895,7 +929,7 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 				resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 				resp.Diagnostics.AddError(
 					"Reinstall still in progress",
-					fmt.Sprintf("%v. State kept as %s — re-run apply to wait for this reinstall (will not place a new order).", waitErr, state.ID.ValueString()),
+					fmt.Sprintf("%v. State kept as %s - re-run apply to wait for this reinstall (will not place a new order).", waitErr, state.ID.ValueString()),
 				)
 				return
 			}
@@ -913,7 +947,7 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 					resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 					resp.Diagnostics.AddError(
 						"Reinstall still in progress",
-						fmt.Sprintf("%v. State kept as %s — re-run apply to wait for this reinstall (will not place a new order).", inProg.cause, state.ID.ValueString()),
+						fmt.Sprintf("%v. State kept as %s - re-run apply to wait for this reinstall (will not place a new order).", inProg.cause, state.ID.ValueString()),
 					)
 					return
 				}
@@ -1029,7 +1063,7 @@ func (r *serverResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	for time.Now().Before(deadline) {
 		show, err := r.client.EQShow(ctx, serverID)
 		if err != nil {
-			return // gone or inaccessible — fine
+			return // gone or inaccessible - fine
 		}
 		st := serverStatus(show)
 		if st != "" && !strings.EqualFold(st, "rent") {

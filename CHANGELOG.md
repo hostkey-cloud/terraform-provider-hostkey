@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-20
+
 ### Fixed
 
 - `hostkey_server`: `main_ipv4` and `status` use `UseStateForUnknown`, so a no-op plan no longer perpetually shows `1 to change` with only those fields as `(known after apply)`.
@@ -15,10 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hostkey_server`: after create, if InvAPI did not apply `hostname`, provider attempts `eq/rename_server` and warns on residual drift; Read records live hostname from `eq/show` when available.
 - `hostkey_server`: Read removes the resource from state when InvAPI reports the server as not found (cancelled/deleted outside Terraform), instead of failing every plan.
 - `hostkey_server`: plan warns when `location_name` is unknown so catalog checks are deferred to apply (instead of a silent skip).
-- Catalog: `root_size` rejected when it exceeds per-disk capacity parsed from preset `hdd` (e.g. `2x960` → 960 GB).
+- `hostkey_server`: import-safe RequiresReplace — null→known after import no longer forces replace (AUD-001).
+- `hostkey_server`: Create generates a unique default `hostname` when unset and serializes snapshot+`order_instance` (AUD-005) to reduce pending mis-correlation under parallelism.
+- InvAPI: `APIError` messages redact secrets in Message/Result at construct and in `Error()`.
 
 ### Changed
 
+- `root_size` is documented and validated as a **percentage** of total disk (1–100), matching InvAPI — not GB. The earlier GB-vs-`hdd` capacity check was incorrect and was removed.
 - Pending wait polls log InvAPI status hints via `tflog` (`TF_LOG=INFO`) — Terraform CLI still hardcodes the `Still creating...` line and cannot show custom status there.
 - Create with `ssh_key` emits a warning to verify key login (InvAPI does not expose authorized_keys confirmation).
 

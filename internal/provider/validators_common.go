@@ -16,8 +16,10 @@ const (
 	minPollIntervalSecs = 5
 	maxPollIntervalSecs = 300
 
-	minRootSizeGB = 1
-	maxRootSizeGB = 1024 * 1024 // 1 PiB — generous upper bound
+	// root_size is a PERCENTAGE of total disk space per eq/order_instance
+	// (default 100), not a GB value.
+	minRootSizePercent = 1
+	maxRootSizePercent = 100
 
 	minIPv4Amount = 1
 	maxIPv4Amount = 64
