@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- InvAPI client: retries no longer blindly replay `net/add_ipv4`, `pdns/add_domain`, `pdns/add_dns`, `ssh_keys/add`, or `tags/add` on timeout/5xx, matching the existing `eq/order_instance` protection — each creates a resource with no server-side idempotency key, so a lost response after a successful write could otherwise duplicate an IP, DNS record, SSH key, or tag.
+- InvAPI: `showHostname` only trusts a bare `name` key at the top level of `server_data`; `hostname`/`server_name` remain trusted at any depth (avoids mistaking nested catalog `name` fields for the server hostname during pending correlation).
 - Build: require Go **1.26.6** (stdlib fixes for `net/url`, `crypto/tls`, `encoding/asn1`, `net/http` reported by govulncheck).
 - `hostkey_server`: static, zero-network config checks (own_os/os_template/deploy_options/ipv4_amount/vlan/private_vlan warnings, `power_off_hard` requires `power_state=off`, bare-metal option checks, tag length limits) moved from the `ModifyPlan` hook into a new `ValidateConfig` implementation, so they now surface on a bare `terraform validate` without provider credentials. The create-only "preset/OS/traffic plan required" checks stay in `ModifyPlan` since they need `isCreate`, which `ValidateConfig` cannot determine.
 - `hostkey_server`: `ssh_key` is now marked `Sensitive` so it is redacted from plan/apply output and logs.

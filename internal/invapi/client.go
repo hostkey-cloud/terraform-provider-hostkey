@@ -208,12 +208,28 @@ func (c *Client) postForm(ctx context.Context, module string, params url.Values,
 	return nil, fmt.Errorf("invapi %s: request failed after retries: %w", module, lastErr)
 }
 
-// isNonRetryableForm marks paid / destructive InvAPI actions that must not be replayed on timeout or 5xx.
+// nonRetryableActions lists (module, action) InvAPI calls that create a new
+// resource with no server-side idempotency key: there is no way to tell
+// "the write already applied" from "the write never happened" on retry. If
+// the HTTP response for one of these is lost after InvAPI already applied
+// it (timeout, dropped connection, or 5xx after a successful write), blindly
+// retrying could duplicate a paid order, an IPv4 lease, a DNS record, an SSH
+// key, or a tag. Reads, deletes, and idempotent sets are safe to retry.
+var nonRetryableActions = map[string]map[string]bool{
+	"eq":       {"order_instance": true},
+	"net":      {"add_ipv4": true},
+	"pdns":     {"add_domain": true, "add_dns": true},
+	"ssh_keys": {"add": true},
+	"tags":     {"add": true},
+}
+
+// isNonRetryableForm marks create-style InvAPI actions that must not be replayed on timeout or 5xx.
 func isNonRetryableForm(module string, params url.Values) bool {
-	if module != "eq" {
+	actions, ok := nonRetryableActions[module]
+	if !ok {
 		return false
 	}
-	return params.Get("action") == "order_instance"
+	return actions[params.Get("action")]
 }
 
 // doPostOnce performs a single HTTP attempt. It returns the decoded

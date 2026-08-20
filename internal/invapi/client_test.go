@@ -97,14 +97,41 @@ func TestPostForm_NoRetryOrderInstance(t *testing.T) {
 }
 
 func TestIsNonRetryableForm(t *testing.T) {
-	if !isNonRetryableForm("eq", url.Values{"action": {"order_instance"}}) {
-		t.Fatal("order_instance")
+	nonRetryable := []struct{ module, action string }{
+		{"eq", "order_instance"},
+		{"net", "add_ipv4"},
+		{"pdns", "add_domain"},
+		{"pdns", "add_dns"},
+		{"ssh_keys", "add"},
+		{"tags", "add"},
 	}
-	if isNonRetryableForm("eq", url.Values{"action": {"show"}}) {
-		t.Fatal("show is retryable")
+	for _, tc := range nonRetryable {
+		if !isNonRetryableForm(tc.module, url.Values{"action": {tc.action}}) {
+			t.Fatalf("%s/%s must be non-retryable", tc.module, tc.action)
+		}
 	}
-	if isNonRetryableForm("pdns", url.Values{"action": {"delete_dns"}}) {
-		t.Fatal("pdns delete is retryable")
+
+	retryable := []struct{ module, action string }{
+		{"eq", "show"},
+		{"eq", "list"},
+		{"eq", "rename_server"},
+		{"eq", "on"},
+		{"eq", "off"},
+		{"eq", "update_servers"},
+		{"pdns", "delete_dns"},
+		{"pdns", "delete_domain"},
+		{"pdns", "view_zone"},
+		{"net", "remove_ipv4"},
+		{"ssh_keys", "delete"},
+		{"ssh_keys", "list"},
+		{"tags", "remove"},
+		{"tags", "list"},
+		{"presets", "list"},
+	}
+	for _, tc := range retryable {
+		if isNonRetryableForm(tc.module, url.Values{"action": {tc.action}}) {
+			t.Fatalf("%s/%s must be retryable", tc.module, tc.action)
+		}
 	}
 }
 

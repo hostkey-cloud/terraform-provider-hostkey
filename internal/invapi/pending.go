@@ -78,26 +78,29 @@ func showHostname(show *ServerShowResponse) string {
 	}
 
 	// InvAPI "server_data" shape is not consistent: hostname may appear as a top-level
-	// field or be nested inside other objects. We do a best-effort recursive search
-	// for well-known keys.
+	// field or be nested inside other objects. We do a best-effort search for
+	// well-known keys.
 	var sd any
 	if err := json.Unmarshal(show.ServerData, &sd); err != nil {
 		return ""
 	}
 
-	keys := map[string]struct{}{
+	// "hostname"/"server_name" are specific enough that a match anywhere in
+	// the tree is trustworthy. A bare "name" key is common on unrelated nested
+	// objects (preset, os, location, ...); trusting it at any depth previously
+	// risked correlating a pending order to the wrong server. "name" is only
+	// trusted at the top level of server_data.
+	preciseKeys := map[string]struct{}{
 		"hostname":    {},
 		"server_name": {},
-		"name":        {},
 	}
 
 	var walk func(v any) string
 	walk = func(v any) string {
 		switch t := v.(type) {
 		case map[string]any:
-			// First, try direct keys.
 			for k, raw := range t {
-				if _, ok := keys[strings.ToLower(k)]; !ok {
+				if _, ok := preciseKeys[strings.ToLower(k)]; !ok {
 					continue
 				}
 				if s, ok := raw.(string); ok {
@@ -107,7 +110,6 @@ func showHostname(show *ServerShowResponse) string {
 					}
 				}
 			}
-			// Then recursively scan children.
 			for _, raw := range t {
 				if got := walk(raw); got != "" {
 					return got
@@ -126,7 +128,25 @@ func showHostname(show *ServerShowResponse) string {
 		}
 	}
 
-	return walk(sd)
+	if got := walk(sd); got != "" {
+		return got
+	}
+
+	if m, ok := sd.(map[string]any); ok {
+		for k, raw := range m {
+			if strings.ToLower(k) != "name" {
+				continue
+			}
+			if s, ok := raw.(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					return s
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 func showContainsHostname(show *ServerShowResponse, wantHostname string) bool {

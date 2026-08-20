@@ -208,6 +208,30 @@ func TestShowHostname_ExtractsNestedHostname(t *testing.T) {
 	}
 }
 
+func TestShowHostname_IgnoresNestedUnrelatedNameField(t *testing.T) {
+	show := &ServerShowResponse{
+		ServerData: json.RawMessage(`{
+			"data": {
+				"preset": {
+					"name": "vps.v1.small"
+				}
+			}
+		}`),
+	}
+	if got := showHostname(show); got != "" {
+		t.Fatalf("got %q, want empty (nested preset name must not be treated as hostname)", got)
+	}
+}
+
+func TestShowHostname_TrustsTopLevelNameField(t *testing.T) {
+	show := &ServerShowResponse{
+		ServerData: json.RawMessage(`{"name": "tf-pico-renamed", "preset": {"name": "vps.v1.small"}}`),
+	}
+	if got := showHostname(show); got != "tf-pico-renamed" {
+		t.Fatalf("got %q want %q", got, "tf-pico-renamed")
+	}
+}
+
 func TestShowContainsHostname_FindsNestedStringValue(t *testing.T) {
 	show := &ServerShowResponse{
 		ServerData: json.RawMessage(`{

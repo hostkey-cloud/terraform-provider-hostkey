@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+// Catalog list endpoints (presets/list, os/list, traffic_plans/list,
+// software/list) are not documented with page/limit/offset parameters in the
+// InvAPI apidocs pages reviewed for this provider, and the response types
+// below have no page-cursor or total-count field. Treat this as informational:
+// if InvAPI silently truncates a very large catalog, the provider only sees
+// the first page. The HTTP body cap (maxResponseBodyBytes) is a defensive
+// backstop, not pagination. Revisit if InvAPI documents pagination later.
 type OSListResponse struct {
 	Result     string          `json:"result"`
 	OSList     []OSEntry       `json:"os_list"`
