@@ -87,3 +87,36 @@ func TestPendingInvoiceFromState(t *testing.T) {
 		t.Fatalf("invoice field: %d %v", n, ok)
 	}
 }
+
+func TestKeepPendingComputedPreservesKnownPowerState(t *testing.T) {
+	plan := serverModel{
+		PowerState: types.StringUnknown(),
+	}
+	state := serverModel{
+		ID:         types.StringValue("pending:123"),
+		Invoice:    types.Int64Value(123),
+		Status:     types.StringValue("Pending"),
+		MainIPv4:   types.StringValue(""),
+		PowerState: types.StringNull(),
+	}
+
+	keepPendingComputed(&plan, state)
+
+	if !plan.PowerState.IsNull() {
+		t.Fatalf("power_state should stay known-null, got %#v", plan.PowerState)
+	}
+}
+
+func TestPendingCreateStateNormalizesUnknownPowerState(t *testing.T) {
+	pending := serverModel{
+		PowerState: types.StringUnknown(),
+	}
+
+	if pending.PowerState.IsUnknown() {
+		pending.PowerState = types.StringNull()
+	}
+
+	if !pending.PowerState.IsNull() {
+		t.Fatalf("expected power_state null, got %#v", pending.PowerState)
+	}
+}

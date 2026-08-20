@@ -13,6 +13,27 @@ import (
 type WaitOptions struct {
 	PollInterval time.Duration
 	Timeout      time.Duration
+	// OnPoll is called after each unsuccessful poll (optional). status is a short
+	// InvAPI hint when available (callback scope / result); otherwise empty.
+	OnPoll func(status string)
+}
+
+func callbackStatusHint(check *CallbackCheckResponse) string {
+	if check == nil {
+		return ""
+	}
+	if s := strings.TrimSpace(string(check.Scope)); s != "" && s != "null" {
+		// Scope may be a JSON string or a quoted token; keep it short for logs/UI.
+		s = strings.Trim(s, `"`)
+		if len(s) > 80 {
+			s = s[:77] + "..."
+		}
+		return s
+	}
+	if s := strings.TrimSpace(check.Result); s != "" {
+		return s
+	}
+	return ""
 }
 
 func (c *Client) CallbackCheck(ctx context.Context, key string) (*CallbackCheckResponse, error) {
@@ -61,6 +82,10 @@ func (c *Client) WaitForCallback(ctx context.Context, key string, opts WaitOptio
 				return check, err
 			}
 			return check, nil
+		}
+
+		if opts.OnPoll != nil {
+			opts.OnPoll(callbackStatusHint(check))
 		}
 
 		if time.Now().After(deadline) {

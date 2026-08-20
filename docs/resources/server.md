@@ -112,7 +112,7 @@ Same resource and attributes as VPS/dedicated — change **`preset_name`** and p
 ### Optional
 
 - `preset_name` / `preset_id` — catalog preset (name preferred): `vm.*`, `vds.*`, `bm.*`, `gpu.*`, `vgpu.*`. Change forces replace.
-- `os_name` / `os_id` — OS. Setting `os_name` alone updates `os_id` at plan time. Change triggers reinstall.
+- `os_name` / `os_id` — OS. Setting `os_name` alone updates `os_id` at plan time. If both are set in HCL and disagree, plan fails with a clear conflict error (remove the stale `os_id` or align it). Change triggers reinstall.
 - `soft_name` / `soft_id` — marketplace software. Setting `soft_name` alone updates `soft_id` at plan time. Change triggers reinstall.
 - `traffic_plan_name` / `traffic_plan_id` — traffic plan for that preset (VM vs dedic names differ; dedic often needs `- FREE` / `(NNNN P)` hints or an id). Setting `traffic_plan_name` alone updates `traffic_plan_id` at plan time. Change forces replace.
 - `hostname` — server hostname (rename via InvAPI).
@@ -159,6 +159,7 @@ To avoid surprise drift, either:
 ## Notes
 
 - `root_pass` is stored in Terraform state (sensitive).
-- If create wait is interrupted (network/DNS), state stays `pending:<invoice>`. The next apply **waits for that invoice** via `eq/update_servers` `deploy_keys` / callback — it does not place a new order and does not adopt a sibling server. `terraform plan` is not a no-op while pending.
+- If create wait is interrupted (network/DNS), state stays `pending:<invoice>`. The next apply **waits for that invoice** via `eq/update_servers` `deploy_keys` / callback — it does not place a new order and does not adopt a sibling server. `terraform plan` is not a no-op while pending. Do **not** `terraform taint` / replace a pending resource: destroy of an unlinked pending only drops state and leaves the paid invoice in billing.
+- While waiting, set `TF_LOG=INFO` to see InvAPI status hints on each poll. Terraform CLI itself always prints a fixed `Still creating... [elapsed]` line and cannot show custom status there.
 - Pending create only resumes this resource's own `pending:<invoice>` — foreign Pending orders are never adopted.
 - RAID / disk layout: [Hostkey RAID docs](https://hostkey.com/documentation/technical/exist_server_using/raid_create/) ([RU](https://hostkey.ru/documentation/technical/exist_server_using/raid_create/)).

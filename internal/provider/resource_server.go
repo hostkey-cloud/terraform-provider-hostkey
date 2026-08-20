@@ -340,10 +340,16 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 			"main_ipv4": schema.StringAttribute{
 				Description: "Primary IPv4 address after deploy.",
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"status": schema.StringAttribute{
 				Description: "Last known server status from InvAPI.",
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"invoice": schema.Int64Attribute{
 				Description: "WHMCS invoice id from order_instance (set after Paid).",
@@ -425,7 +431,12 @@ func (r *serverResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 		)
 		return
 	}
-	if err := r.resolveOrderIDs(ctx, &plan); err != nil {
+	var config serverModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if err := r.resolveOrderIDs(ctx, &plan, &config); err != nil {
 		resp.Diagnostics.AddError("Catalog name resolve failed", err.Error())
 		return
 	}
@@ -459,6 +470,9 @@ func (r *serverResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 
 	if !req.State.Raw.IsNull() {
 		if _, ok := parsePendingInvoice(state.ID.ValueString()); ok {
+			// ID must be unknown so apply can replace pending:<invoice> with the real
+			// server id without an inconsistent-result error. This stays update-in-place
+			// (not replace) unless the resource was previously tainted.
 			plan.ID = types.StringUnknown()
 			plan.MainIPv4 = types.StringUnknown()
 			plan.Status = types.StringUnknown()
@@ -499,7 +513,7 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	if err := r.resolveOrderIDs(ctx, &plan); err != nil {
+	if err := r.resolveOrderIDs(ctx, &plan, &plan); err != nil {
 		resp.Diagnostics.AddError("Catalog name resolve failed", err.Error())
 		return
 	}
@@ -544,6 +558,19 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
+	// Additional pre-order snapshot from eq/update_servers.servers.
+	// In some accounts eq/list may be stale/incomplete, which can cause
+	// previously-existing servers to be treated as "newcomers" later during
+	// pending resolution. By unioning both sources we reduce false newcomers
+	// and avoid relying on hostname fields from eq/show.
+	if upd, updErr := r.client.EQUpdateServers(ctx); updErr == nil {
+		if ids, idErr := upd.IDs(); idErr == nil {
+			for _, id := range ids {
+				known[id] = struct{}{}
+			}
+		}
+	}
+
 	tflog.Info(ctx, "Ordering Hostkey server", map[string]any{
 		"preset_id": orderReq.Preset,
 		"location":  orderReq.LocationName,
@@ -573,6 +600,9 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 			pending.Status = types.StringValue("Pending")
 		}
 		pending.MainIPv4 = types.StringValue("")
+		if pending.PowerState.IsUnknown() {
+			pending.PowerState = types.StringNull()
+		}
 		resp.Diagnostics.Append(resp.State.Set(ctx, &pending)...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -596,6 +626,12 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 		found, cb, waitErr := r.client.WaitForPendingServer(ctx, orderResp.Invoice, orderResp.Callback, known, plan.Hostname.ValueString(), invapi.WaitOptions{
 			PollInterval: interval,
 			Timeout:      createTimeout,
+			OnPoll: func(status string) {
+				tflog.Info(ctx, "waiting for server deploy", map[string]any{
+					"invoice": orderResp.Invoice,
+					"status":  status,
+				})
+			},
 		})
 		if cb != "" {
 			if err := setPrivateCallback(ctx, resp.Private, cb); err != nil {
@@ -603,7 +639,7 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 			}
 		}
 		if waitErr != nil {
-			resp.Diagnostics.AddError(
+			resp.Diagnostics.AddWarning(
 				"Deploy still in progress",
 				fmt.Sprintf("%v; callback=%q invoice=%d. State kept as pending:<invoice>. Re-run apply to wait for this invoice (will not place a new order).", waitErr, cb, orderResp.Invoice),
 			)
@@ -710,6 +746,7 @@ func keepPendingComputed(plan *serverModel, state serverModel) {
 	plan.Invoice = state.Invoice
 	plan.Status = state.Status
 	plan.MainIPv4 = state.MainIPv4
+	plan.PowerState = state.PowerState
 }
 
 func keysInt(m map[int]struct{}) []int {
@@ -745,6 +782,12 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 		resolved, cb, err := r.client.WaitForPendingServer(waitCtx, invoice, getPrivateCallback(ctx, req.Private), known, plan.Hostname.ValueString(), invapi.WaitOptions{
 			PollInterval: pollIntervalFrom(plan),
 			Timeout:      waitTimeout,
+			OnPoll: func(status string) {
+				tflog.Info(ctx, "waiting for pending server link", map[string]any{
+					"invoice": invoice,
+					"status":  status,
+				})
+			},
 		})
 		if cb != "" {
 			if setErr := setPrivateCallback(ctx, resp.Private, cb); setErr != nil {
@@ -754,7 +797,8 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 		if err != nil {
 			keepPendingComputed(&plan, state)
 			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-			resp.Diagnostics.AddError(
+			// Warning (not Error): keep apply non-tainted and resume-friendly, same as Create.
+			resp.Diagnostics.AddWarning(
 				"Deploy still in progress",
 				fmt.Sprintf("%v. State kept as %s — re-run apply to wait for this invoice (will not place a new order).", err, state.ID.ValueString()),
 			)
@@ -872,9 +916,13 @@ func (r *serverResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	if strings.HasPrefix(state.ID.ValueString(), pendingIDPrefix) {
 		resolved, _, err := r.lookupThisPending(ctx, req.Private, state)
 		if err != nil {
+			inv := state.ID.ValueString()
+			if n, ok := pendingInvoiceFromState(state); ok {
+				inv = strconv.Itoa(n)
+			}
 			resp.Diagnostics.AddWarning(
 				"Pending server not linked yet",
-				"Removed from Terraform state only. Cancel the Pending service in InvAPI/billing panel if needed. Terraform did not cancel a server id because this invoice is not linked yet.",
+				fmt.Sprintf("Removed from Terraform state only; WHMCS/InvAPI invoice %s was not cancelled. Cancel that pending service in the Hostkey panel if it is still billed. Terraform could not cancel a server id because this invoice is not linked yet.", inv),
 			)
 			return
 		}

@@ -193,6 +193,36 @@ func TestCallbackServerID_UsesContextOrScopeID(t *testing.T) {
 	}
 }
 
+func TestShowHostname_ExtractsNestedHostname(t *testing.T) {
+	show := &ServerShowResponse{
+		ServerData: json.RawMessage(`{
+			"data": {
+				"server": {
+					"hostname": "tf-pico-renamed"
+				}
+			}
+		}`),
+	}
+	if got := showHostname(show); got != "tf-pico-renamed" {
+		t.Fatalf("got %q want %q", got, "tf-pico-renamed")
+	}
+}
+
+func TestShowContainsHostname_FindsNestedStringValue(t *testing.T) {
+	show := &ServerShowResponse{
+		ServerData: json.RawMessage(`{
+			"config": {
+				"some": {
+					"nested_value": "tf-pico-renamed"
+				}
+			}
+		}`),
+	}
+	if !showContainsHostname(show, "tf-pico-renamed") {
+		t.Fatalf("expected hostname to be found")
+	}
+}
+
 func TestWaitForPendingServer_FallsBackToSingleNewListID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -225,7 +255,7 @@ func TestWaitForPendingServer_FallsBackToSingleNewListID(t *testing.T) {
 	}
 }
 
-func TestWaitForPendingServer_SingleNewListIDDoesNotRequireHostnameMatch(t *testing.T) {
+func TestWaitForPendingServer_SingleNewListIDWithHostnameWaitsForHostnameCorrelation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		switch {
@@ -248,7 +278,47 @@ func TestWaitForPendingServer_SingleNewListIDDoesNotRequireHostnameMatch(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}, 20: {}}, "tf-pending-timeout-20260819-1709", WaitOptions{
+	_, _, err = c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}, 20: {}}, "tf-pending-timeout-20260819-1709", WaitOptions{
+		PollInterval: 10 * time.Millisecond,
+		Timeout:      80 * time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "timed out waiting for invoice 603548") {
+		t.Fatalf("expected timeout while hostname is unavailable, got err=%v", err)
+	}
+}
+
+func TestWaitForPendingServer_CallbackSidZeroUsesUpdateServersIDsFirst(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.Contains(r.URL.Path, "eq_callback.php"):
+			// Callback is still pending; does not carry a server id yet.
+			_, _ = io.WriteString(w, `{"result":"OK","scope":"pending","context":{"id":"","ip":""}}`)
+			return
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "update_servers":
+			// update_servers shows exactly one new server candidate (101).
+			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":{"603548":"cb-ours"},"servers":[10,101],"billing_servers":[]}`)
+			return
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "list":
+			// eq/list shows two new ids, and would normally require hostname disambiguation.
+			_, _ = io.WriteString(w, `{"result":"OK","servers":[10,101,102]}`)
+			return
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "show" && r.Form.Get("id") == "101":
+			_, _ = io.WriteString(w, `{"result":"OK","server_data":{"hostname":"tf-pending-timeoutcheck-20260819-1846"}}`)
+			return
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{BaseURL: srv.URL + "/", HTTPClient: srv.Client(), MaxRetries: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	known := map[int]struct{}{10: {}}
+	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "cb-ours", known, "tf-pending-timeoutcheck-20260819-1846", WaitOptions{
 		PollInterval: 10 * time.Millisecond,
 		Timeout:      2 * time.Second,
 	})

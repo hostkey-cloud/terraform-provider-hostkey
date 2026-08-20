@@ -219,9 +219,15 @@ func joinTrafficNames(items []trafficNamedID) string {
 }
 
 // resolveOrderIDs fills numeric IDs from human-readable names on the plan.
-func (r *serverResource) resolveOrderIDs(ctx context.Context, plan *serverModel) error {
+// config is the Terraform configuration (not state): when the user sets both
+// *_name and *_id explicitly and they disagree, return a clear error instead of
+// silently overwriting the configured id (which causes "Provider produced invalid plan").
+func (r *serverResource) resolveOrderIDs(ctx context.Context, plan *serverModel, config *serverModel) error {
 	if r.client == nil {
 		return fmt.Errorf("provider not configured")
+	}
+	if config == nil {
+		config = plan
 	}
 	location := plan.LocationName.ValueString()
 	var errs []string
@@ -240,12 +246,14 @@ func (r *serverResource) resolveOrderIDs(ctx context.Context, plan *serverModel)
 		}
 	}
 
-	// When *_name is set, always sync *_id from the catalog. Computed ids copied from
-	// state (UseStateForUnknown) would otherwise stay stale after a name-only change.
+	// When *_name is set, sync *_id from the catalog unless the user explicitly
+	// configured a conflicting *_id in HCL.
 	if !plan.OSName.IsNull() && !plan.OSName.IsUnknown() && strings.TrimSpace(plan.OSName.ValueString()) != "" {
 		id, err := resolveOSID(ctx, r.client, location, presetID, plan.OSName.ValueString())
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("os_name: %v", err))
+		} else if conflict := configuredIDConflict(config.OSID, id, "os", plan.OSName.ValueString()); conflict != "" {
+			errs = append(errs, conflict)
 		} else {
 			plan.OSID = typesInt64(id)
 		}
@@ -255,6 +263,8 @@ func (r *serverResource) resolveOrderIDs(ctx context.Context, plan *serverModel)
 		id, err := resolveSoftID(ctx, r.client, location, presetID, plan.SoftName.ValueString())
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("soft_name: %v", err))
+		} else if conflict := configuredIDConflict(config.SoftID, id, "soft", plan.SoftName.ValueString()); conflict != "" {
+			errs = append(errs, conflict)
 		} else {
 			plan.SoftID = typesInt64(id)
 		}
@@ -264,6 +274,8 @@ func (r *serverResource) resolveOrderIDs(ctx context.Context, plan *serverModel)
 		id, err := resolveTrafficPlanID(ctx, r.client, location, presetID, plan.TrafficPlanName.ValueString())
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("traffic_plan_name: %v", err))
+		} else if conflict := configuredIDConflict(config.TrafficPlanID, id, "traffic_plan", plan.TrafficPlanName.ValueString()); conflict != "" {
+			errs = append(errs, conflict)
 		} else {
 			plan.TrafficPlanID = typesInt64(id)
 		}
@@ -273,6 +285,20 @@ func (r *serverResource) resolveOrderIDs(ctx context.Context, plan *serverModel)
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// configuredIDConflict reports when HCL sets *_id to a value that disagrees with
+// the catalog id for *_name. State-only computed ids (config null) are not conflicts
+// and may be overwritten so name-only changes plan cleanly.
+func configuredIDConflict(configID types.Int64, catalogID int, label, name string) string {
+	if configID.IsNull() || configID.IsUnknown() || configID.ValueInt64() <= 0 {
+		return ""
+	}
+	got := int(configID.ValueInt64())
+	if got == catalogID {
+		return ""
+	}
+	return fmt.Sprintf("%s_name %q is catalog id %d, but %s_id is %d (remove %s_id from the config or set it to %d)", label, strings.TrimSpace(name), catalogID, label, got, label, catalogID)
 }
 
 func typesInt64(id int) types.Int64 {

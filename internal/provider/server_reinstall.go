@@ -154,7 +154,7 @@ func buildReinstallRequest(plan serverModel, serverID int) invapi.OrderInstanceR
 }
 
 func (r *serverResource) applyReinstall(ctx context.Context, serverID int, plan serverModel, respPriv privateData) error {
-	if err := r.resolveOrderIDs(ctx, &plan); err != nil {
+	if err := r.resolveOrderIDs(ctx, &plan, &plan); err != nil {
 		return fmt.Errorf("catalog resolve: %w", err)
 	}
 	if err := r.verifyOrderCatalog(ctx, &plan); err != nil {

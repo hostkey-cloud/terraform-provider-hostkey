@@ -84,6 +84,18 @@ func TestMatchTrafficPlan(t *testing.T) {
 	}
 }
 
+func TestConfiguredIDConflict(t *testing.T) {
+	if msg := configuredIDConflict(types.Int64Value(237), 187, "os", "Ubuntu 22.04"); msg == "" {
+		t.Fatal("expected conflict when config os_id disagrees with catalog id for os_name")
+	}
+	if msg := configuredIDConflict(types.Int64Value(187), 187, "os", "Ubuntu 22.04"); msg != "" {
+		t.Fatalf("matching config id must not conflict: %s", msg)
+	}
+	if msg := configuredIDConflict(types.Int64Null(), 187, "os", "Ubuntu 22.04"); msg != "" {
+		t.Fatalf("null config id (name-only) must allow sync: %s", msg)
+	}
+}
+
 func TestVerifyNamedIDPairNameOnlyChange(t *testing.T) {
 	items := []namedID{
 		{ID: 187, Name: "Ubuntu 22.04"},

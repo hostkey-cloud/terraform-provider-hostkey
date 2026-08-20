@@ -66,16 +66,103 @@ func showHostname(show *ServerShowResponse) string {
 	if show == nil || len(show.ServerData) == 0 {
 		return ""
 	}
-	var sd map[string]any
+
+	// InvAPI "server_data" shape is not consistent: hostname may appear as a top-level
+	// field or be nested inside other objects. We do a best-effort recursive search
+	// for well-known keys.
+	var sd any
 	if err := json.Unmarshal(show.ServerData, &sd); err != nil {
 		return ""
 	}
-	for _, key := range []string{"hostname", "server_name", "name"} {
-		if v, ok := sd[key].(string); ok && strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
+
+	keys := map[string]struct{}{
+		"hostname":    {},
+		"server_name": {},
+		"name":        {},
+	}
+
+	var walk func(v any) string
+	walk = func(v any) string {
+		switch t := v.(type) {
+		case map[string]any:
+			// First, try direct keys.
+			for k, raw := range t {
+				if _, ok := keys[strings.ToLower(k)]; !ok {
+					continue
+				}
+				if s, ok := raw.(string); ok {
+					s = strings.TrimSpace(s)
+					if s != "" {
+						return s
+					}
+				}
+			}
+			// Then recursively scan children.
+			for _, raw := range t {
+				if got := walk(raw); got != "" {
+					return got
+				}
+			}
+			return ""
+		case []any:
+			for _, raw := range t {
+				if got := walk(raw); got != "" {
+					return got
+				}
+			}
+			return ""
+		default:
+			return ""
 		}
 	}
-	return ""
+
+	return walk(sd)
+}
+
+func showContainsHostname(show *ServerShowResponse, wantHostname string) bool {
+	if show == nil || len(show.ServerData) == 0 {
+		return false
+	}
+	wantHostname = strings.TrimSpace(wantHostname)
+	if wantHostname == "" {
+		return false
+	}
+
+	var sd any
+	if err := json.Unmarshal(show.ServerData, &sd); err != nil {
+		return false
+	}
+
+	var walk func(v any) bool
+	walk = func(v any) bool {
+		switch t := v.(type) {
+		case map[string]any:
+			for _, raw := range t {
+				if walk(raw) {
+					return true
+				}
+			}
+			return false
+		case []any:
+			for _, raw := range t {
+				if walk(raw) {
+					return true
+				}
+			}
+			return false
+		case string:
+			s := strings.TrimSpace(t)
+			if s == "" {
+				return false
+			}
+			// Hostnames should be unique; require exact (case-insensitive) match.
+			return strings.EqualFold(s, wantHostname)
+		default:
+			return false
+		}
+	}
+
+	return walk(sd)
 }
 
 func (c *Client) matchPendingIDs(ctx context.Context, known map[int]struct{}, ids []int, wantHostname string) (int, error) {
@@ -85,10 +172,19 @@ func (c *Client) matchPendingIDs(ctx context.Context, known map[int]struct{}, id
 	case 0:
 		return 0, ErrPendingNotReady
 	case 1:
-		// A single newcomer after the pre-order snapshot is already safely
-		// disambiguated. Do not require eq/show hostname matching here because
-		// some panels lag or omit hostname fields even after the server exists.
-		return newcomers[0], nil
+		// Single newcomer can be accepted immediately only when caller did not
+		// request hostname correlation.
+		if wantHostname == "" {
+			return newcomers[0], nil
+		}
+		show, err := c.EQShow(ctx, newcomers[0])
+		if err != nil {
+			return 0, ErrPendingNotReady
+		}
+		if showContainsHostname(show, wantHostname) {
+			return newcomers[0], nil
+		}
+		return 0, ErrPendingNotReady
 	}
 
 	if wantHostname == "" {
@@ -101,7 +197,7 @@ func (c *Client) matchPendingIDs(ctx context.Context, known map[int]struct{}, id
 		if err != nil {
 			continue
 		}
-		if strings.EqualFold(showHostname(show), wantHostname) {
+		if showContainsHostname(show, wantHostname) {
 			matched = append(matched, id)
 		}
 	}
@@ -148,7 +244,12 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 				if matchErr == nil {
 					return sid, "", nil
 				}
-				// Keep going to eq/list fallback below; update_servers may lag or have a different shape.
+				if len(ids) > 0 {
+					// Fail closed for invoice-bound resolution: if update_servers already
+					// has candidate ids but correlation is not yet deterministic, keep
+					// waiting instead of broadening to eq/list.
+					return 0, "", ErrPendingNotReady
+				}
 			}
 		}
 	}
@@ -163,6 +264,23 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 		sid := CallbackServerID(check)
 		if sid == 0 {
 			if invoice > 0 {
+				// Prefer eq/update_servers.servers ids: it is often a subset and
+				// frequently yields a single newcomer id even when eq/list shows
+				// multiple. This lets us resolve without relying on eq/show
+				// hostname fields that may lag or be missing.
+				upd, updErr := c.EQUpdateServers(ctx)
+				if updErr == nil {
+					if ids, idErr := upd.IDs(); idErr == nil {
+						if matched, matchErr := c.matchPendingIDs(ctx, known, ids, wantHostname); matchErr == nil {
+							return matched, callback, nil
+						}
+						if len(ids) > 0 {
+							// Concurrency-safe behavior: avoid falling back to broader
+							// eq/list when update_servers cannot yet be correlated.
+							return 0, callback, ErrPendingNotReady
+						}
+					}
+				}
 				sid, listErr := c.matchPendingListID(ctx, known, wantHostname)
 				if listErr != nil {
 					return 0, callback, listErr
@@ -227,6 +345,22 @@ func (c *Client) WaitForPendingServer(ctx context.Context, invoice int, callback
 			}
 		} else {
 			lastErr = ErrPendingNotReady
+		}
+
+		if opts.OnPoll != nil {
+			status := ""
+			if resolvedCallback != "" {
+				if check, cbErr := c.CallbackCheck(ctx, resolvedCallback); cbErr == nil {
+					status = callbackStatusHint(check)
+				}
+			}
+			if status == "" && lookErr != nil {
+				status = lookErr.Error()
+			}
+			if status == "" {
+				status = "pending"
+			}
+			opts.OnPoll(status)
 		}
 
 		if time.Now().After(deadline) {
