@@ -2,9 +2,10 @@ package invapi
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -361,7 +362,11 @@ func backoff(attempt int) time.Duration {
 	if half <= 0 {
 		return d
 	}
-	return time.Duration(half) + time.Duration(rand.Int63n(half))
+	n, err := rand.Int(rand.Reader, big.NewInt(half))
+	if err != nil {
+		return d
+	}
+	return time.Duration(half) + time.Duration(n.Int64())
 }
 
 func wrapHTTPError(module string, status int, err error) error {

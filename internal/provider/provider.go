@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	envAPIKey   = "HOSTKEY_API_KEY"
-	envAPIToken = "HOSTKEY_API_TOKEN"
+	// Environment variable names (not secrets).
+	envAPIKey   = "HOSTKEY_API_KEY"   //nolint:gosec // G101: env var name
+	envAPIToken = "HOSTKEY_API_TOKEN" //nolint:gosec // G101: env var name
 	envBaseURL  = "HOSTKEY_BASE_URL"
 	envAPIURL   = "HOSTKEY_API_URL"
 )
