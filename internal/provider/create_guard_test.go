@@ -182,4 +182,3 @@ func TestPrivateTerminalErrorRoundTrip(t *testing.T) {
 		t.Fatalf("cleared got %q", got)
 	}
 }
-

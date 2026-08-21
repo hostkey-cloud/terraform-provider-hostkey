@@ -122,4 +122,3 @@ func terminalFromCallbackCheckErr(err error) error {
 	}
 	return nil
 }
-
