@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-08-21
+
+### Fixed
+
+- `hostkey_server`: concurrent Creates in the same process can no longer all link to the same newcomer server id when `eq/show` hostname still lags. Pending resolution now uses a process-local claim registry (keyed by invoice) so only one waiter may adopt a given id; other waiters keep polling for a different newcomer or hostname/callback match. Serial single-newcomer linking is unchanged.
+- InvAPI: `ShowHostname` / pending correlation also read hostname from `eq/show` top-level `tags[]` (`tag=hostname` or `server_name`) — InvAPI often omits hostname from `server_data`, which previously broke hostname match and rename self-heal.
+- `hostkey_server`: when Create has a requested/default hostname, pending link no longer claims the first single newcomer with empty/mismatched hostname; it waits for a tags/`server_data` hostname match. Blind single-newcomer accept remains only when `wantHostname` is empty (avoids FI↔RU cross-link under parallel apply).
+
+
 ## [0.1.7] - 2026-08-20
 
 ### Removed

@@ -666,9 +666,24 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 		}
 	}
 
+	claimOwner := invapi.PendingClaimOwner(orderResp.Invoice, orderResp.Callback)
 	serverID := orderResp.ID
 	if serverID > 0 {
+		if claimOwner == "" {
+			// Rare: order returned a server id without an invoice/callback handle.
+			claimOwner = fmt.Sprintf("direct:%d", serverID)
+		}
+		// Claim immediately so concurrent pending waiters cannot treat this id
+		// as a free newcomer while hostname/callback correlation still lags.
+		if !invapi.ClaimPendingServerID(serverID, claimOwner) {
+			resp.Diagnostics.AddError(
+				"Unexpected order id",
+				fmt.Sprintf("server id %d was already claimed by another concurrent pending create in this process", serverID),
+			)
+			return
+		}
 		if err := acceptNewServerID(serverID, known); err != nil {
+			invapi.ReleasePendingServerClaim(serverID, claimOwner)
 			resp.Diagnostics.AddError("Unexpected order id", err.Error())
 			return
 		}
@@ -685,6 +700,7 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 			},
 		})
 		if cb != "" {
+			claimOwner = invapi.PendingClaimOwner(orderResp.Invoice, cb)
 			if err := setPrivateCallback(ctx, resp.Private, cb); err != nil {
 				resp.Diagnostics.AddWarning("private state", err.Error())
 			}
@@ -697,6 +713,7 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 			return
 		}
 		if err := acceptNewServerID(found, known); err != nil {
+			invapi.ReleasePendingServerClaim(found, claimOwner)
 			resp.Diagnostics.AddError("Unexpected new server id", err.Error())
 			return
 		}

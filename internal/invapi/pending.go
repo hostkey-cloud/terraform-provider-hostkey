@@ -65,15 +65,25 @@ func newcomerIDs(known map[int]struct{}, ids []int) []int {
 // ShowHostname is the exported form of showHostname for callers outside this
 // package (e.g. resource Read/Create) that need to compare the live server
 // hostname reported by eq/show against the hostname that was requested.
-// InvAPI's server_data shape is inconsistent, so this is a best-effort
-// recursive lookup, not a guaranteed field; an empty string means "could not
+// InvAPI's server_data / tags shape is inconsistent, so this is a best-effort
+// lookup, not a guaranteed field; an empty string means "could not
 // determine the live hostname from this response", not "no hostname".
 func ShowHostname(show *ServerShowResponse) string {
 	return showHostname(show)
 }
 
 func showHostname(show *ServerShowResponse) string {
-	if show == nil || len(show.ServerData) == 0 {
+	if show == nil {
+		return ""
+	}
+	if got := showHostnameFromServerData(show.ServerData); got != "" {
+		return got
+	}
+	return showHostnameFromTags(show.Tags)
+}
+
+func showHostnameFromServerData(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
 		return ""
 	}
 
@@ -81,7 +91,7 @@ func showHostname(show *ServerShowResponse) string {
 	// field or be nested inside other objects. We do a best-effort search for
 	// well-known keys.
 	var sd any
-	if err := json.Unmarshal(show.ServerData, &sd); err != nil {
+	if err := json.Unmarshal(raw, &sd); err != nil {
 		return ""
 	}
 
@@ -99,26 +109,26 @@ func showHostname(show *ServerShowResponse) string {
 	walk = func(v any) string {
 		switch t := v.(type) {
 		case map[string]any:
-			for k, raw := range t {
+			for k, val := range t {
 				if _, ok := preciseKeys[strings.ToLower(k)]; !ok {
 					continue
 				}
-				if s, ok := raw.(string); ok {
+				if s, ok := val.(string); ok {
 					s = strings.TrimSpace(s)
 					if s != "" {
 						return s
 					}
 				}
 			}
-			for _, raw := range t {
-				if got := walk(raw); got != "" {
+			for _, val := range t {
+				if got := walk(val); got != "" {
 					return got
 				}
 			}
 			return ""
 		case []any:
-			for _, raw := range t {
-				if got := walk(raw); got != "" {
+			for _, val := range t {
+				if got := walk(val); got != "" {
 					return got
 				}
 			}
@@ -133,11 +143,11 @@ func showHostname(show *ServerShowResponse) string {
 	}
 
 	if m, ok := sd.(map[string]any); ok {
-		for k, raw := range m {
+		for k, val := range m {
 			if strings.ToLower(k) != "name" {
 				continue
 			}
-			if s, ok := raw.(string); ok {
+			if s, ok := val.(string); ok {
 				s = strings.TrimSpace(s)
 				if s != "" {
 					return s
@@ -149,12 +159,45 @@ func showHostname(show *ServerShowResponse) string {
 	return ""
 }
 
+// showHostnameFromTags reads hostname from eq/show top-level tags[] — a common
+// InvAPI shape where server_data has no hostname/name but tags include
+// {tag:"hostname", value:"..."} (or server_name).
+func showHostnameFromTags(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var tags []Tag
+	if err := json.Unmarshal(raw, &tags); err != nil {
+		return ""
+	}
+	var hostname, serverName string
+	for _, t := range tags {
+		v := strings.TrimSpace(t.Value)
+		if v == "" {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(t.Tag)) {
+		case "hostname":
+			hostname = v
+		case "server_name":
+			serverName = v
+		}
+	}
+	if hostname != "" {
+		return hostname
+	}
+	return serverName
+}
+
 func showContainsHostname(show *ServerShowResponse, wantHostname string) bool {
-	if show == nil || len(show.ServerData) == 0 {
+	wantHostname = strings.TrimSpace(wantHostname)
+	if show == nil || wantHostname == "" {
 		return false
 	}
-	wantHostname = strings.TrimSpace(wantHostname)
-	if wantHostname == "" {
+	if live := showHostname(show); live != "" && strings.EqualFold(live, wantHostname) {
+		return true
+	}
+	if len(show.ServerData) == 0 {
 		return false
 	}
 
@@ -195,18 +238,33 @@ func showContainsHostname(show *ServerShowResponse, wantHostname string) bool {
 	return walk(sd)
 }
 
-func (c *Client) matchPendingIDs(ctx context.Context, known map[int]struct{}, ids []int, wantHostname string) (int, error) {
-	newcomers := newcomerIDs(known, ids)
+func (c *Client) matchPendingIDs(ctx context.Context, known map[int]struct{}, ids []int, wantHostname, owner string) (int, error) {
+	newcomers := availableNewcomerIDs(known, ids, owner)
 	wantHostname = strings.TrimSpace(wantHostname)
 	switch len(newcomers) {
 	case 0:
 		return 0, ErrPendingNotReady
 	case 1:
-		// Exactly one newcomer: link it. Hostname on eq/show often lags or is
-		// empty even after Active; Create self-heals via eq/rename_server.
-		// Requiring a hostname match here left apply stuck forever when
-		// deploy_keys/callback were also empty.
-		return newcomers[0], nil
+		// Exactly one available newcomer. When wantHostname is empty (rare;
+		// Create always sets a unique default), link immediately — hostname on
+		// eq/show often lags. When wantHostname is set, require a match (including
+		// tags[]) before claiming so parallel Creates cannot cross-link the first
+		// empty-hostname newcomer; empty/mismatched → keep waiting.
+		id := newcomers[0]
+		if wantHostname != "" {
+			show, err := c.EQShow(ctx, id)
+			if err != nil {
+				return 0, ErrPendingNotReady
+			}
+			live := showHostname(show)
+			if live == "" || !strings.EqualFold(live, wantHostname) {
+				return 0, ErrPendingNotReady
+			}
+		}
+		if !tryClaimPendingServerID(id, owner) {
+			return 0, ErrPendingNotReady
+		}
+		return id, nil
 	}
 
 	if wantHostname == "" {
@@ -227,13 +285,16 @@ func (c *Client) matchPendingIDs(ctx context.Context, known map[int]struct{}, id
 	case 0:
 		return 0, fmt.Errorf("multiple new server ids %v; none matched hostname %q", newcomers, wantHostname)
 	case 1:
+		if !tryClaimPendingServerID(matched[0], owner) {
+			return 0, ErrPendingNotReady
+		}
 		return matched[0], nil
 	default:
 		return 0, fmt.Errorf("multiple new server ids %v matched hostname %q", matched, wantHostname)
 	}
 }
 
-func (c *Client) matchPendingListID(ctx context.Context, known map[int]struct{}, wantHostname string) (int, error) {
+func (c *Client) matchPendingListID(ctx context.Context, known map[int]struct{}, wantHostname, owner string) (int, error) {
 	list, listErr := c.EQList(ctx, nil)
 	if listErr != nil {
 		return 0, listErr
@@ -242,25 +303,31 @@ func (c *Client) matchPendingListID(ctx context.Context, known map[int]struct{},
 	if idErr != nil {
 		return 0, idErr
 	}
-	return c.matchPendingIDs(ctx, known, ids, wantHostname)
+	return c.matchPendingIDs(ctx, known, ids, wantHostname, owner)
 }
 
 // LookupPendingServer is one poll for the server created by this invoice (and optional callback).
 // When invoice > 0 it prefers deploy_keys/callback, but can safely fall back to
-// eq/list when there is a single new server id or a hostname match disambiguates.
+// eq/list when there is a single new server id (only if wantHostname is empty) or a
+// hostname match disambiguates (server_data and/or tags[]). Before returning an id
+// it claims it process-locally so concurrent waiters cannot both adopt the same newcomer.
 func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback string, known map[int]struct{}, wantHostname string) (id int, resolvedCallback string, err error) {
 	if known == nil {
 		known = map[int]struct{}{}
 	}
 	callback = strings.TrimSpace(callback)
+	owner := pendingClaimOwner(invoice, callback)
 	if callback == "" && invoice > 0 {
 		upd, updErr := c.EQUpdateServers(ctx)
 		if updErr == nil {
 			callback = DeployKeyForInvoice(upd.DeployKeysMap(), invoice)
+			if callback != "" {
+				owner = pendingClaimOwner(invoice, callback)
+			}
 			if callback == "" && strings.TrimSpace(wantHostname) != "" {
 				ids, idErr := upd.IDs()
 				if idErr == nil {
-					sid, matchErr := c.matchPendingIDs(ctx, known, ids, wantHostname)
+					sid, matchErr := c.matchPendingIDs(ctx, known, ids, wantHostname, owner)
 					if matchErr == nil {
 						return sid, "", nil
 					}
@@ -277,6 +344,9 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 		// eq/list when hostname can disambiguate, or ErrPendingNotReady when it cannot.
 	}
 	if callback != "" {
+		if owner == "" {
+			owner = pendingClaimOwner(invoice, callback)
+		}
 		check, cbErr := c.CallbackCheck(ctx, callback)
 		if cbErr != nil {
 			return 0, callback, cbErr
@@ -294,7 +364,7 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 				upd, updErr := c.EQUpdateServers(ctx)
 				if updErr == nil {
 					if ids, idErr := upd.IDs(); idErr == nil {
-						if matched, matchErr := c.matchPendingIDs(ctx, known, ids, wantHostname); matchErr == nil {
+						if matched, matchErr := c.matchPendingIDs(ctx, known, ids, wantHostname, owner); matchErr == nil {
 							return matched, callback, nil
 						}
 						if len(ids) > 0 {
@@ -304,7 +374,7 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 						}
 					}
 				}
-				sid, listErr := c.matchPendingListID(ctx, known, wantHostname)
+				sid, listErr := c.matchPendingListID(ctx, known, wantHostname, owner)
 				if listErr != nil {
 					return 0, callback, listErr
 				}
@@ -315,20 +385,25 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 		if err := rejectKnownID(sid, invoice, known); err != nil {
 			return 0, callback, err
 		}
+		if !tryClaimPendingServerID(sid, owner) {
+			// Another concurrent waiter already claimed this id (e.g. via the
+			// single-newcomer path). Keep waiting rather than double-linking.
+			return 0, callback, ErrPendingNotReady
+		}
 		return sid, callback, nil
 	}
 	if invoice > 0 {
 		if strings.TrimSpace(wantHostname) == "" {
 			return 0, "", ErrPendingNotReady
 		}
-		sid, listErr := c.matchPendingListID(ctx, known, wantHostname)
+		sid, listErr := c.matchPendingListID(ctx, known, wantHostname, owner)
 		if listErr != nil {
 			return 0, "", listErr
 		}
 		return sid, "", nil
 	}
 
-	sid, matchErr := c.matchPendingListID(ctx, known, "")
+	sid, matchErr := c.matchPendingListID(ctx, known, "", owner)
 	if matchErr != nil {
 		return 0, "", matchErr
 	}

@@ -8,10 +8,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func freshPendingClaims(t *testing.T) {
+	t.Helper()
+	resetPendingServerClaimsForTest()
+	t.Cleanup(resetPendingServerClaimsForTest)
+}
 
 func TestDeployKeyForInvoice(t *testing.T) {
 	keys := map[string]string{"603548": "cb-a", "111": "cb-b"}
@@ -46,7 +53,25 @@ func TestUniqueNewListID(t *testing.T) {
 	}
 }
 
+func TestPendingClaim_SameOwnerReclaims(t *testing.T) {
+	freshPendingClaims(t)
+	if !tryClaimPendingServerID(101, "invoice:1") {
+		t.Fatal("first claim")
+	}
+	if !tryClaimPendingServerID(101, "invoice:1") {
+		t.Fatal("same owner must reclaim")
+	}
+	if tryClaimPendingServerID(101, "invoice:2") {
+		t.Fatal("other owner must not steal")
+	}
+	ReleasePendingServerClaim(101, "invoice:1")
+	if !tryClaimPendingServerID(101, "invoice:2") {
+		t.Fatal("after release other owner may claim")
+	}
+}
+
 func TestWaitForPendingServer_BindsInvoiceCallback(t *testing.T) {
+	freshPendingClaims(t)
 	var listed atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -93,6 +118,7 @@ func TestWaitForPendingServer_BindsInvoiceCallback(t *testing.T) {
 }
 
 func TestWaitForPendingServer_DoesNotAdoptForeignListID(t *testing.T) {
+	freshPendingClaims(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		switch {
@@ -123,6 +149,7 @@ func TestWaitForPendingServer_DoesNotAdoptForeignListID(t *testing.T) {
 }
 
 func TestWaitForPendingServer_RetriesUpdateServersError(t *testing.T) {
+	freshPendingClaims(t)
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -164,6 +191,7 @@ func TestWaitForPendingServer_RetriesUpdateServersError(t *testing.T) {
 }
 
 func TestLookupPendingServer_NotReady(t *testing.T) {
+	freshPendingClaims(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":[]}`)
@@ -232,6 +260,57 @@ func TestShowHostname_TrustsTopLevelNameField(t *testing.T) {
 	}
 }
 
+func TestShowHostname_FromTagsHostname(t *testing.T) {
+	show := &ServerShowResponse{
+		ServerData: json.RawMessage(`{"status":"Active"}`),
+		Tags:       json.RawMessage(`[{"tag":"hostname","value":"tf-3vm-fi-120711"},{"tag":"os","value":"Debian 12"}]`),
+	}
+	if got := showHostname(show); got != "tf-3vm-fi-120711" {
+		t.Fatalf("got %q want %q", got, "tf-3vm-fi-120711")
+	}
+}
+
+func TestShowHostname_FromTagsServerNameWhenNoHostname(t *testing.T) {
+	show := &ServerShowResponse{
+		Tags: json.RawMessage(`[{"tag":"server_name","value":"my-server"},{"tag":"os","value":"Ubuntu"}]`),
+	}
+	if got := showHostname(show); got != "my-server" {
+		t.Fatalf("got %q want %q", got, "my-server")
+	}
+}
+
+func TestShowHostname_PrefersServerDataOverTags(t *testing.T) {
+	show := &ServerShowResponse{
+		ServerData: json.RawMessage(`{"hostname":"from-server-data"}`),
+		Tags:       json.RawMessage(`[{"tag":"hostname","value":"from-tags"}]`),
+	}
+	if got := showHostname(show); got != "from-server-data" {
+		t.Fatalf("got %q want %q", got, "from-server-data")
+	}
+}
+
+func TestShowHostname_TagsOnlyWhenServerDataEmpty(t *testing.T) {
+	show := &ServerShowResponse{
+		Tags: json.RawMessage(`[{"tag":"hostname","value":"tags-only-host"}]`),
+	}
+	if got := showHostname(show); got != "tags-only-host" {
+		t.Fatalf("got %q want %q", got, "tags-only-host")
+	}
+}
+
+func TestShowContainsHostname_MatchesTags(t *testing.T) {
+	show := &ServerShowResponse{
+		ServerData: json.RawMessage(`{}`),
+		Tags:       json.RawMessage(`[{"tag":"hostname","value":"tf-pico-renamed"}]`),
+	}
+	if !showContainsHostname(show, "tf-pico-renamed") {
+		t.Fatalf("expected tags hostname match")
+	}
+	if showContainsHostname(show, "other-host") {
+		t.Fatalf("expected no match for other-host")
+	}
+}
+
 func TestShowContainsHostname_FindsNestedStringValue(t *testing.T) {
 	show := &ServerShowResponse{
 		ServerData: json.RawMessage(`{
@@ -248,6 +327,7 @@ func TestShowContainsHostname_FindsNestedStringValue(t *testing.T) {
 }
 
 func TestWaitForPendingServer_FallsBackToSingleNewListID(t *testing.T) {
+	freshPendingClaims(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		switch {
@@ -279,7 +359,8 @@ func TestWaitForPendingServer_FallsBackToSingleNewListID(t *testing.T) {
 	}
 }
 
-func TestWaitForPendingServer_SingleNewcomerLinksWithoutHostnameOnShow(t *testing.T) {
+func TestWaitForPendingServer_SingleNewcomerLinksWithoutWantHostname(t *testing.T) {
+	freshPendingClaims(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		switch {
@@ -290,7 +371,6 @@ func TestWaitForPendingServer_SingleNewcomerLinksWithoutHostnameOnShow(t *testin
 		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "list":
 			_, _ = io.WriteString(w, `{"result":"OK","servers":[10,20,101]}`)
 		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "show":
-			// Simulate a panel response that does not include hostname yet.
 			_, _ = io.WriteString(w, `{"result":"OK","server_data":{}}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -302,19 +382,229 @@ func TestWaitForPendingServer_SingleNewcomerLinksWithoutHostnameOnShow(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}, 20: {}}, "tf-pending-timeout-20260819-1709", WaitOptions{
+	// Empty wantHostname: single newcomer still links even when eq/show has no hostname.
+	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}, 20: {}}, "", WaitOptions{
 		PollInterval: 10 * time.Millisecond,
 		Timeout:      2 * time.Second,
 	})
 	if err != nil {
-		t.Fatalf("expected single newcomer link without hostname on show, got err=%v", err)
+		t.Fatalf("expected single newcomer link without wantHostname, got err=%v", err)
 	}
 	if id != 101 {
 		t.Fatalf("id=%d want 101", id)
 	}
 }
 
+func TestWaitForPendingServer_WantHostnameSkipsEmptySingleNewcomer(t *testing.T) {
+	freshPendingClaims(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "update_servers":
+			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":{"603548":"cb-ours"},"servers":[10,20,101]}`)
+		case strings.Contains(r.URL.Path, "eq_callback.php"):
+			_, _ = io.WriteString(w, `{"result":"OK","scope":"pending","context":{"id":"","ip":""}}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "list":
+			_, _ = io.WriteString(w, `{"result":"OK","servers":[10,20,101]}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "show":
+			_, _ = io.WriteString(w, `{"result":"OK","server_data":{}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{BaseURL: srv.URL + "/", HTTPClient: srv.Client(), MaxRetries: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}, 20: {}}, "tf-pending-want-host", WaitOptions{
+		PollInterval: 10 * time.Millisecond,
+		Timeout:      200 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected timeout while waiting for hostname match, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+}
+
+func TestWaitForPendingServer_SingleNewcomerLinksViaTagsHostname(t *testing.T) {
+	freshPendingClaims(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "update_servers":
+			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":{"603548":"cb-ours"},"servers":[10,20,101]}`)
+		case strings.Contains(r.URL.Path, "eq_callback.php"):
+			_, _ = io.WriteString(w, `{"result":"OK","scope":"pending","context":{"id":"","ip":""}}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "list":
+			_, _ = io.WriteString(w, `{"result":"OK","servers":[10,20,101]}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "show":
+			// Live InvAPI often puts hostname only in tags[], not server_data.
+			_, _ = io.WriteString(w, `{"result":"OK","server_data":{"status":"Active"},"tags":[{"tag":"hostname","value":"tf-pending-tags-host"}]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{BaseURL: srv.URL + "/", HTTPClient: srv.Client(), MaxRetries: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}, 20: {}}, "tf-pending-tags-host", WaitOptions{
+		PollInterval: 10 * time.Millisecond,
+		Timeout:      2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("expected tags hostname match to link, got err=%v", err)
+	}
+	if id != 101 {
+		t.Fatalf("id=%d want 101", id)
+	}
+}
+
+func TestWaitForPendingServer_ConcurrentWaitersMatchHostnameNotFirstNewcomer(t *testing.T) {
+	freshPendingClaims(t)
+
+	// Parallel Creates with wantHostname set must not claim the first empty-hostname
+	// newcomer; each waiter waits until tags/server_data hostname matches.
+	var publishHostnames atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "update_servers":
+			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":{"1001":"cb-a","1002":"cb-b"},"servers":[10,101,102]}`)
+		case strings.Contains(r.URL.Path, "eq_callback.php"):
+			_, _ = io.WriteString(w, `{"result":"OK","scope":"pending","context":{"id":"","ip":""}}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "list":
+			_, _ = io.WriteString(w, `{"result":"OK","servers":[10,101,102]}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "show":
+			id := r.Form.Get("id")
+			if !publishHostnames.Load() {
+				_, _ = io.WriteString(w, `{"result":"OK","server_data":{}}`)
+				return
+			}
+			switch id {
+			case "101":
+				_, _ = io.WriteString(w, `{"result":"OK","server_data":{},"tags":[{"tag":"hostname","value":"host-a"}]}`)
+			case "102":
+				_, _ = io.WriteString(w, `{"result":"OK","server_data":{},"tags":[{"tag":"hostname","value":"host-b"}]}`)
+			default:
+				_, _ = io.WriteString(w, `{"result":"OK","server_data":{}}`)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{BaseURL: srv.URL + "/", HTTPClient: srv.Client(), MaxRetries: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	known := map[int]struct{}{10: {}}
+	opts := WaitOptions{PollInterval: 15 * time.Millisecond, Timeout: 3 * time.Second}
+
+	type result struct {
+		invoice int
+		id      int
+		err     error
+	}
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	wantByInvoice := map[int]string{1001: "host-a", 1002: "host-b"}
+	for _, invoice := range []int{1001, 1002} {
+		invoice := invoice
+		go func() {
+			defer wg.Done()
+			id, _, waitErr := c.WaitForPendingServer(context.Background(), invoice, "", known, wantByInvoice[invoice], opts)
+			results <- result{invoice: invoice, id: id, err: waitErr}
+		}()
+	}
+
+	// Brief empty-hostname window (would previously cause cross-link), then publish tags.
+	time.Sleep(40 * time.Millisecond)
+	publishHostnames.Store(true)
+
+	wg.Wait()
+	close(results)
+
+	got := map[int]int{}
+	for r := range results {
+		if r.err != nil {
+			t.Fatalf("invoice %d: %v", r.invoice, r.err)
+		}
+		got[r.invoice] = r.id
+	}
+	if got[1001] != 101 {
+		t.Fatalf("invoice 1001: id=%d want 101", got[1001])
+	}
+	if got[1002] != 102 {
+		t.Fatalf("invoice 1002: id=%d want 102", got[1002])
+	}
+}
+
+func TestLookupPendingServer_WantHostnameEmptySingleNewcomerNotClaimed(t *testing.T) {
+	freshPendingClaims(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "update_servers":
+			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":{"2001":"cb-a","2002":"cb-b"},"servers":[10,201]}`)
+		case strings.Contains(r.URL.Path, "eq_callback.php"):
+			_, _ = io.WriteString(w, `{"result":"OK","scope":"pending","context":{"id":"","ip":""}}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "show":
+			_, _ = io.WriteString(w, `{"result":"OK","server_data":{}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{BaseURL: srv.URL + "/", HTTPClient: srv.Client(), MaxRetries: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	known := map[int]struct{}{10: {}}
+
+	var wg sync.WaitGroup
+	var wins atomic.Int32
+	var ready atomic.Int32
+	start := make(chan struct{})
+	wg.Add(2)
+	for _, invoice := range []int{2001, 2002} {
+		invoice := invoice
+		go func() {
+			defer wg.Done()
+			ready.Add(1)
+			<-start
+			id, _, lookErr := c.LookupPendingServer(context.Background(), invoice, "", known, "lagging-hostname")
+			if lookErr == nil && id == 201 {
+				wins.Add(1)
+			} else if lookErr == nil {
+				t.Errorf("invoice %d got unexpected id %d", invoice, id)
+			} else if !errors.Is(lookErr, ErrPendingNotReady) {
+				t.Errorf("invoice %d: %v", invoice, lookErr)
+			}
+		}()
+	}
+	for ready.Load() < 2 {
+		time.Sleep(time.Millisecond)
+	}
+	close(start)
+	wg.Wait()
+	if wins.Load() != 0 {
+		t.Fatalf("expected no waiter to claim empty-hostname newcomer when wantHostname set, got %d wins", wins.Load())
+	}
+}
+
 func TestWaitForPendingServer_CallbackSidZeroUsesUpdateServersIDsFirst(t *testing.T) {
+	freshPendingClaims(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		switch {
@@ -358,6 +648,7 @@ func TestWaitForPendingServer_CallbackSidZeroUsesUpdateServersIDsFirst(t *testin
 }
 
 func TestWaitForPendingServer_HostnameDisambiguatesMultipleNewIDs(t *testing.T) {
+	freshPendingClaims(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		switch {
@@ -394,6 +685,7 @@ func TestWaitForPendingServer_HostnameDisambiguatesMultipleNewIDs(t *testing.T) 
 }
 
 func TestWaitForPendingServer_NoCallbackFallsBackByHostname(t *testing.T) {
+	freshPendingClaims(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		switch {
@@ -426,6 +718,7 @@ func TestWaitForPendingServer_NoCallbackFallsBackByHostname(t *testing.T) {
 }
 
 func TestWaitForPendingServer_NoCallbackUsesUpdateServersListFirst(t *testing.T) {
+	freshPendingClaims(t)
 	var listHits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
