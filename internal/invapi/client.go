@@ -342,6 +342,7 @@ func isAuthFailure(status int, err error) bool {
 	for _, needle := range []string{
 		"unauthorized",
 		"invalid token",
+		"invalid hash",
 		"token expired",
 		"token is invalid",
 		"not authorized",

@@ -255,25 +255,26 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 	callback = strings.TrimSpace(callback)
 	if callback == "" && invoice > 0 {
 		upd, updErr := c.EQUpdateServers(ctx)
-		if updErr != nil {
-			return 0, "", updErr
-		}
-		callback = DeployKeyForInvoice(upd.DeployKeysMap(), invoice)
-		if callback == "" && strings.TrimSpace(wantHostname) != "" {
-			ids, idErr := upd.IDs()
-			if idErr == nil {
-				sid, matchErr := c.matchPendingIDs(ctx, known, ids, wantHostname)
-				if matchErr == nil {
-					return sid, "", nil
-				}
-				if len(ids) > 0 {
-					// Fail closed for invoice-bound resolution: if update_servers already
-					// has candidate ids but correlation is not yet deterministic, keep
-					// waiting instead of broadening to eq/list.
-					return 0, "", ErrPendingNotReady
+		if updErr == nil {
+			callback = DeployKeyForInvoice(upd.DeployKeysMap(), invoice)
+			if callback == "" && strings.TrimSpace(wantHostname) != "" {
+				ids, idErr := upd.IDs()
+				if idErr == nil {
+					sid, matchErr := c.matchPendingIDs(ctx, known, ids, wantHostname)
+					if matchErr == nil {
+						return sid, "", nil
+					}
+					if len(ids) > 0 {
+						// Fail closed for invoice-bound resolution: if update_servers already
+						// has candidate ids but correlation is not yet deterministic, keep
+						// waiting instead of broadening to eq/list.
+						return 0, "", ErrPendingNotReady
+					}
 				}
 			}
 		}
+		// update_servers may fail (e.g. stale session "Invalid hash"); fall through to
+		// eq/list when hostname can disambiguate, or ErrPendingNotReady when it cannot.
 	}
 	if callback != "" {
 		check, cbErr := c.CallbackCheck(ctx, callback)

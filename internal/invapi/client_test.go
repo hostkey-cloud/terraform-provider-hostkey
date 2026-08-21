@@ -211,7 +211,10 @@ func TestIsAuthFailure(t *testing.T) {
 		t.Fatal("403 should not force auth retry alone")
 	}
 	if !isAuthFailure(200, &APIError{Message: "Invalid token"}) {
-		t.Fatal("message")
+		t.Fatal("expected Invalid token to be auth failure")
+	}
+	if !isAuthFailure(200, &APIError{Code: -2, Message: "Invalid hash"}) {
+		t.Fatal("expected Invalid hash to be auth failure")
 	}
 }
 
