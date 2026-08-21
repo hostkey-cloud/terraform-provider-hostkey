@@ -2,6 +2,7 @@ package invapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +28,62 @@ func TestDecodeAPIError_Message(t *testing.T) {
 	api, ok := err.(*APIError)
 	if !ok || api.Message != "boom" {
 		t.Fatalf("got %#v", err)
+	}
+}
+
+func TestDecodeAPIError_NoAppropriateServers(t *testing.T) {
+	body := []byte(`{"result":-1,"error":"No appropriate servers found","code":"NO_APPROPRIATE_SERVERS"}`)
+	err := decodeAPIError(body)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	api, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("got %#v", err)
+	}
+	if api.Name != "NO_APPROPRIATE_SERVERS" {
+		t.Fatalf("Name=%q", api.Name)
+	}
+	if api.Message != "No appropriate servers found" {
+		t.Fatalf("Message=%q", api.Message)
+	}
+	if !IsNoAppropriateServers(err) {
+		t.Fatal("expected IsNoAppropriateServers")
+	}
+	if !strings.Contains(err.Error(), "NO_APPROPRIATE_SERVERS") {
+		t.Fatalf("Error()=%q", err.Error())
+	}
+}
+
+func TestLogin_NoAppropriateServers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "auth.php") {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"result":-1,"error":"No appropriate servers found","code":"NO_APPROPRIATE_SERVERS"}`)
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(Config{
+		BaseURL:    srv.URL + "/",
+		MaxRetries: 1,
+		HTTPClient: srv.Client(),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := NewTokenManager("key", 3600, client)
+	client.SetAuth(auth)
+
+	_, err = auth.Token(context.Background())
+	if !errors.Is(err, ErrNoAppropriateServers) {
+		t.Fatalf("got %v, want ErrNoAppropriateServers", err)
+	}
+	if !IsNoAppropriateServers(err) {
+		t.Fatal("expected IsNoAppropriateServers")
+	}
+	if !strings.Contains(err.Error(), "empty account") && !strings.Contains(err.Error(), "no servers yet") {
+		t.Fatalf("message should explain empty-account limitation: %v", err)
 	}
 }
 

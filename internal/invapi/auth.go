@@ -3,10 +3,23 @@ package invapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"sync"
 	"time"
+)
+
+// ErrNoAppropriateServers is returned by auth/login when InvAPI refuses to
+// issue a session because the account has zero servers. This is a known
+// InvAPI limitation (chicken-and-egg with Terraform-first ordering), not an
+// invalid API key. Auth docs only document key-based auth/login — there is
+// no alternate empty-account session path the provider can use.
+var ErrNoAppropriateServers = errors.New(
+	"InvAPI auth/login refused: this account has no servers yet (NO_APPROPRIATE_SERVERS). " +
+		"This is usually not a wrong API key — InvAPI will not create a session on an empty account, " +
+		"so Terraform cannot order the first server either. Order the first server in the Hostkey panel " +
+		"(or wait for an InvAPI fix), then re-run terraform",
 )
 
 type TokenManager struct {
@@ -67,6 +80,9 @@ func (tm *TokenManager) refresh(ctx context.Context) (string, error) {
 
 	body, err := tm.client.PostFormWithoutAuth(ctx, "auth", params)
 	if err != nil {
+		if IsNoAppropriateServers(err) {
+			return "", ErrNoAppropriateServers
+		}
 		return "", fmt.Errorf("auth/login: %w", err)
 	}
 
@@ -77,6 +93,11 @@ func (tm *TokenManager) refresh(ctx context.Context) (string, error) {
 
 	token, invapiURL, _, expire := resp.Normalized()
 	if token == "" {
+		// Defensive: login envelopes with result=-1 normally fail in PostForm;
+		// keep the same clear error if a future shape returns HTTP 200 + empty token.
+		if IsNoAppropriateServers(errors.New(string(body))) {
+			return "", ErrNoAppropriateServers
+		}
 		return "", fmt.Errorf("auth/login: empty token")
 	}
 

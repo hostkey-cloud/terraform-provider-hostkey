@@ -44,7 +44,8 @@ provider "hostkey" {
 
 | Error / symptom | What to do |
 |-----------------|------------|
-| `auth/login: No appropriate servers found` | Use an account API key (`Any`); check provider `region` (RU vs COM) matches your account portal |
+| `InvAPI account has no servers` / `NO_APPROPRIATE_SERVERS` | InvAPI will not issue a session on an **empty** account (zero servers) — not a wrong API key. Order the first server in the Hostkey panel, then re-run Terraform. Also confirm `region` (RU vs COM) matches the portal and the key is account-wide (`Any`) |
+| Other `auth/login` failures | Use an account API key (`Any`); check provider `region` (RU vs COM) matches your account portal |
 | `Catalog verification failed` | Run `terraform plan` with a configured provider; confirm preset/OS/traffic ids via data sources |
 | Ambiguous `traffic_plan_name` | List plans with [hostkey_traffic_plans](data-sources/traffic_plans.md) and `instance_id`; use `(10000 P)` / `- FREE` hints or `traffic_plan_id` |
 | `pending:<invoice>` id | Deploy still running after a Paid order. `terraform plan` shows an in-place update; `apply` waits for **this invoice** (no new `order_instance`). Live status until the numeric id is linked is in the Hostkey panel |

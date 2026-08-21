@@ -15,7 +15,8 @@ var (
 
 // APIError is returned when InvAPI responds with a business error envelope.
 type APIError struct {
-	Code    int
+	Code    int    // numeric code when present (result=-1, code=1, …)
+	Name    string // string code when present (e.g. NO_APPROPRIATE_SERVERS)
 	Message string
 	Result  string
 	Body    string
@@ -23,8 +24,13 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	switch {
+	case e.Name != "" && e.Message != "":
+		return fmt.Sprintf("invapi error (%s): %s", e.Name, redactSecrets(e.Message))
 	case e.Message != "":
-		return fmt.Sprintf("invapi error (code=%d): %s", e.Code, redactSecrets(e.Message))
+		if e.Code != 0 {
+			return fmt.Sprintf("invapi error (code=%d): %s", e.Code, redactSecrets(e.Message))
+		}
+		return fmt.Sprintf("invapi error: %s", redactSecrets(e.Message))
 	case e.Result != "" && e.Result != "OK":
 		return fmt.Sprintf("invapi error: result=%s", redactSecrets(e.Result))
 	default:
@@ -64,9 +70,18 @@ func decodeAPIError(body []byte) error {
 		return fmt.Errorf("invapi: invalid JSON response: %w; body: %s", err, truncate(body, 512))
 	}
 
+	name := codeAsName(envelope.Code)
 	if resultErr := resultFieldError(envelope.Result); resultErr != nil {
-		if apiErr, ok := resultErr.(*APIError); ok && apiErr.Message == "" && envelope.Error != "" {
-			apiErr.Message = redactSecrets(envelope.Error)
+		if apiErr, ok := resultErr.(*APIError); ok {
+			if apiErr.Message == "" && envelope.Error != "" {
+				apiErr.Message = redactSecrets(envelope.Error)
+			}
+			if apiErr.Name == "" {
+				apiErr.Name = name
+			}
+			if apiErr.Body == "" || apiErr.Body == string(envelope.Result) {
+				apiErr.Body = redactSecrets(string(body))
+			}
 		}
 		return resultErr
 	}
@@ -77,10 +92,15 @@ func decodeAPIError(body []byte) error {
 	}
 	msg = redactSecrets(msg)
 	if len(envelope.Code) > 0 && string(envelope.Code) != "0" && string(envelope.Code) != "null" {
-		return &APIError{Message: msg, Body: redactSecrets(string(body)), Code: codeAsInt(envelope.Code)}
+		return &APIError{
+			Message: msg,
+			Body:    redactSecrets(string(body)),
+			Code:    codeAsInt(envelope.Code),
+			Name:    name,
+		}
 	}
 	if msg != "" {
-		return &APIError{Message: msg, Body: redactSecrets(string(body))}
+		return &APIError{Message: msg, Body: redactSecrets(string(body)), Name: name}
 	}
 
 	return nil
@@ -113,6 +133,41 @@ func codeAsInt(raw json.RawMessage) int {
 		return n
 	}
 	return -1
+}
+
+// codeAsName returns a string InvAPI error code (e.g. "NO_APPROPRIATE_SERVERS").
+// Numeric codes are left empty; use Code instead.
+func codeAsName(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+// IsNoAppropriateServers reports InvAPI auth/login refusal when the account
+// has zero servers (code NO_APPROPRIATE_SERVERS / "No appropriate servers found").
+func IsNoAppropriateServers(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrNoAppropriateServers) {
+		return true
+	}
+	var api *APIError
+	if errors.As(err, &api) {
+		if strings.EqualFold(api.Name, "NO_APPROPRIATE_SERVERS") {
+			return true
+		}
+		blob := strings.ToLower(api.Message + " " + api.Result + " " + api.Body)
+		if strings.Contains(blob, "no appropriate servers") {
+			return true
+		}
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no appropriate servers")
 }
 
 func truncate(b []byte, n int) string {

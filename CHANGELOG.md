@@ -7,18 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-
 ### Changed
 
 ## [0.1.9] - 2026-08-21
 
 ### Fixed
 
+- Provider Configure: InvAPI `auth/login` response `NO_APPROPRIATE_SERVERS` / «No appropriate servers found» (empty account with zero servers) is no longer a generic «authentication failed» — the error explains that InvAPI refuses a session on an empty account (not a wrong API key) and that the first server must be ordered in the panel first.
+
 - `hostkey_server`: when a Paid pending deploy is **cancelled or fails** in the panel / InvAPI (callback `result=Error` / failed/cancelled, scope/context error tokens, or async callback key purged), Create/Update/Read stop waiting immediately with Warning **«Deploy cancelled or failed»** instead of polling until create-timeout and saying «Deploy still in progress». State stays `pending:<invoice>` (destroy drops tracking only; no re-order). The terminal reason is stored in private state so the next apply fail-fasts with the same Warning.
 
 - `hostkey_server`: when `preset_name` / `preset_id` is missing from `presets/list` for the configured `location_name`, the error now hints the catalog `locations` string if the preset exists globally (e.g. `bm.v1-str-8t` is NL,FI-only — unfiltered `presets.php` still lists it). Preset `description` (hardware) remains unrelated to `traffic_plan_name`.
 
-- `hostkey_server`: hostname Create self-heal no longer treats a missing `eq/show` hostname as a match against config (empty `ShowHostname` previously left the planned value in state and skipped `eq/rename_server`). Read warns when live hostname cannot be determined. Create/Update emit a **Verify guest OS hostname** warning: InvAPI only exposes hostname via `eq/show` tags/`server_data`, not the guest OS — tags can say `web-01` while the OS still shows a preset-like name (`vm-v2-pico`). When InvAPI live hostname ≠ config, Read still records the live value so the next plan shows a change.
+- `hostkey_server`: hostname Create self-heal no longer treats a missing `eq/show` hostname as a match against config (empty `ShowHostname` previously left the planned value in state and skipped `eq/rename_server`). Read warns when live hostname cannot be determined. Create/Update emit a **Verify guest OS hostname** warning: InvAPI only exposes hostname via `eq/show` tags/`server_data`, not the guest OS — tags can say `web-01` while the OS still shows a preset-like name (`vm-v2-pico`). When InvAPI live hostname ≠ config, **Read** still records the live value so the next plan shows a change (Create/Update apply must keep planned hostname — next bullet).
+
+- `hostkey_server`: Update hostname after import no longer hits **Provider produced inconsistent result after apply** (plan `web-01`, apply wrote live `nl-vmpico` from `eq/show`). Create/Update apply keep the planned hostname in state; Read/refresh still records live InvAPI drift. After a planned rename, the provider calls `eq/rename_server`, then `tags/add` for the `hostname` tag when `ShowHostname` still lags, and polls briefly — if InvAPI never reflects the new name, Update returns a clear Error and keeps the prior live hostname so the next plan still shows the change (no crash loop; no need to edit HCL to the live name).
 
 - `hostkey_server`: Create warns when InvAPI `eq/show` hostname is still empty or an IP at link time — Hostkey readiness emails often put that value (or the main IPv4) in the Hostname field, and `eq/rename_server` self-heal cannot rewrite an email already sent. `hostname` continues to be sent on `order_instance` (trimmed); docs note email vs InvAPI tags vs guest OS.
 

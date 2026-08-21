@@ -164,6 +164,10 @@ func (p *hostkeyProvider) Configure(ctx context.Context, req provider.ConfigureR
 	client.SetAuth(auth)
 
 	if _, err := auth.Token(ctx); err != nil {
+		if invapi.IsNoAppropriateServers(err) {
+			resp.Diagnostics.AddError("InvAPI account has no servers", err.Error())
+			return
+		}
 		resp.Diagnostics.AddError("InvAPI authentication failed", err.Error())
 		return
 	}

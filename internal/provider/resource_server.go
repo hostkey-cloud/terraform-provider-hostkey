@@ -40,6 +40,23 @@ const (
 	pollInterval         = 15 * time.Second
 )
 
+// hostnameApplyPoll* control how long Update/Create wait for eq/show to reflect
+// eq/rename_server (and optional tags/add). Overridable in unit tests.
+var (
+	hostnameApplyPollInterval = 2 * time.Second
+	hostnameApplyPollAttempts = 5
+)
+
+// hostnameStateMode selects whether readServerState writes InvAPI's live
+// hostname into Terraform state (Read / refresh) or keeps the planned value
+// (Create / Update apply contract — avoids "inconsistent result after apply").
+type hostnameStateMode int
+
+const (
+	hostnameStatePreferLive hostnameStateMode = iota
+	hostnameStateKeepPlanned
+)
+
 // createOrderMu serializes the pre-order eq/list snapshot and eq/order_instance
 // across concurrent hostkey_server Create() calls in this process.
 // Only the short snapshot+order window is locked — not the long deploy wait.
@@ -206,7 +223,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"hostname": schema.StringAttribute{
-				Description: "Server hostname. If omitted, the provider generates a unique default (tf-<random>) at create time so concurrent hostkey_server creates in the same apply can be told apart by hostname; InvAPI's own default hostname is not known until after the order resolves. Terraform tracks the InvAPI eq/show value (usually the hostname tag), not the guest OS hostname. Hostkey readiness emails use InvAPI metadata at notify time and may show the main IPv4 if hostname was not applied yet.",
+				Description: "Server hostname. If omitted, the provider generates a unique default (tf-<random>) at create time so concurrent hostkey_server creates in the same apply can be told apart by hostname; InvAPI's own default hostname is not known until after the order resolves. Terraform tracks the InvAPI eq/show value (usually the hostname tag), not the guest OS hostname. On Read/refresh, live InvAPI drift is written into state so the next plan shows a change and Update retries eq/rename_server (plus tags/add hostname when needed). On Create/Update apply, state keeps the planned hostname when InvAPI confirms it — if rename cannot make eq/show match, Update fails and keeps the prior live hostname (no inconsistent-result loop). Hostkey readiness emails use InvAPI metadata at notify time and may show the main IPv4 if hostname was not applied yet.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -728,7 +745,9 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 		serverID = found
 	}
 
-	state, liveHostname, d := r.readServerState(ctx, serverID, plan)
+	// Keep planned hostname in apply state (hostnameStateKeepPlanned). PreferLive
+	// here would write live≠plan and trigger "inconsistent result after apply".
+	state, liveHostname, d := r.readServerState(ctx, serverID, plan, hostnameStateKeepPlanned)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -737,8 +756,8 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 	// eq/order_instance has been observed to intermittently not apply hostname
 	// even though the request included it. Detect mismatch (or missing live
 	// hostname in eq/show) and self-heal via eq/rename_server. Comparing only
-	// state.Hostname is wrong when ShowHostname is empty: readServerState keeps
-	// the planned hostname, which falsely looks like a match.
+	// state.Hostname is wrong when ShowHostname is empty: KeepPlanned leaves the
+	// planned hostname in state, which falsely looks like a match against live.
 	wantHostname := strings.TrimSpace(plan.Hostname.ValueString())
 	// Readiness email is composed by Hostkey when deploy finishes — typically
 	// before this Create path can eq/rename_server. If InvAPI never applied
@@ -756,27 +775,15 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 			"want":      wantHostname,
 			"got":       liveHostname,
 		})
-		if err := r.client.EQRenameServer(ctx, serverID, wantHostname); err != nil {
-			got := liveHostname
-			if got == "" {
-				got = "(none in eq/show)"
-			}
+		if err := r.ensureInvAPIHostname(ctx, serverID, wantHostname); err != nil {
 			resp.Diagnostics.AddWarning(
 				"Hostname was not applied by order_instance and automatic fix-up failed",
-				fmt.Sprintf("InvAPI reported hostname %q instead of the requested %q, and the automatic eq/rename_server fix-up failed: %v. The server was created successfully; only the hostname metadata is affected. Fix it manually in the panel or re-apply.", got, wantHostname, err),
+				fmt.Sprintf("InvAPI reported hostname %q instead of the requested %q, and the automatic fix-up failed: %v. The server was created successfully; Terraform kept the planned hostname in state (apply contract). The next plan/refresh will show InvAPI drift and re-attempt rename, or fix the hostname tag in the panel.", liveHostnameOrNone(liveHostname), wantHostname, err),
 			)
-		} else if refreshed, _, rd := r.readServerState(ctx, serverID, plan); !rd.HasError() {
-			resp.Diagnostics.Append(rd...)
-			state.Hostname = refreshed.Hostname
-			if !strings.EqualFold(strings.TrimSpace(state.Hostname.ValueString()), wantHostname) {
-				resp.Diagnostics.AddWarning(
-					"Hostname still does not match after automatic fix-up",
-					fmt.Sprintf("Requested hostname %q; InvAPI now reports %q after eq/rename_server. Verify manually in the panel.", wantHostname, state.Hostname.ValueString()),
-				)
-			}
-		} else {
-			resp.Diagnostics.Append(rd...)
 		}
+		// Always keep planned hostname after Create — never write a different live
+		// value into apply state (that caused inconsistent-result loops on Update).
+		state.Hostname = plan.Hostname
 	}
 
 	// InvAPI tracks hostname in eq/show tags (and occasionally server_data), not
@@ -809,11 +816,12 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 	if err := r.applyPowerState(ctx, serverID, plan, state); err != nil {
 		resp.Diagnostics.AddWarning("Power state", err.Error())
 	} else if powerStateConfigured(plan) {
-		refreshed, _, rd := r.readServerState(ctx, serverID, plan)
+		refreshed, _, rd := r.readServerState(ctx, serverID, plan, hostnameStateKeepPlanned)
 		resp.Diagnostics.Append(rd...)
 		if !resp.Diagnostics.HasError() {
 			state.PowerState = refreshed.PowerState
 			state.Status = refreshed.Status
+			state.Hostname = plan.Hostname
 		}
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -863,7 +871,7 @@ func (r *serverResource) Read(ctx context.Context, req resource.ReadRequest, res
 		if setErr := setPrivateTerminalError(ctx, resp.Private, ""); setErr != nil {
 			resp.Diagnostics.AddWarning("private state", setErr.Error())
 		}
-		newState, _, d := r.readServerState(ctx, resolved, state)
+		newState, _, d := r.readServerState(ctx, resolved, state, hostnameStatePreferLive)
 		resp.Diagnostics.Append(d...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -891,7 +899,7 @@ func (r *serverResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	newState, _, d := r.readServerState(ctx, serverID, state)
+	newState, _, d := r.readServerState(ctx, serverID, state, hostnameStatePreferLive)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -1052,9 +1060,18 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 		}
 	}
 
-	if !plan.Hostname.IsNull() && plan.Hostname.ValueString() != state.Hostname.ValueString() {
-		if err := r.client.EQRenameServer(ctx, serverID, plan.Hostname.ValueString()); err != nil {
-			resp.Diagnostics.AddError("Rename failed", err.Error())
+	if !plan.Hostname.IsNull() &&
+		strings.TrimSpace(plan.Hostname.ValueString()) != strings.TrimSpace(state.Hostname.ValueString()) {
+		wantHostname := strings.TrimSpace(plan.Hostname.ValueString())
+		priorLive := strings.TrimSpace(state.Hostname.ValueString())
+		if err := r.ensureInvAPIHostname(ctx, serverID, wantHostname); err != nil {
+			resp.Diagnostics.AddError(
+				"Hostname update failed",
+				fmt.Sprintf("InvAPI did not apply hostname %q (eq/show still reports %q): %v. Terraform kept the prior hostname in state so the next plan still shows this change — rename the server (or hostname tag) in the Hostkey panel to %q, then re-apply. Do not change HCL to the live name unless you intend to accept it.", wantHostname, liveHostnameOrNone(priorLive), err, wantHostname),
+			)
+			// Prior state: next plan still proposes hostname change. Do not write
+			// planned web-01 while live remains nl-vmpico (inconsistent result).
+			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 			return
 		}
 		resp.Diagnostics.AddWarning(
@@ -1086,7 +1103,9 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 		})
 	}
 
-	newState, _, d := r.readServerState(ctx, serverID, plan)
+	// Keep planned hostname on apply — PreferLive here reintroduced the
+	// inconsistent-result loop after import (plan web-01, state nl-vmpico).
+	newState, _, d := r.readServerState(ctx, serverID, plan, hostnameStateKeepPlanned)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -1192,7 +1211,12 @@ func (r *serverResource) ImportState(ctx context.Context, req resource.ImportSta
 // readServerState refreshes computed fields from eq/show. liveHostname is the
 // raw ShowHostname result (empty means InvAPI did not expose a hostname in
 // server_data or tags — not "hostname equals config").
-func (r *serverResource) readServerState(ctx context.Context, serverID int, template serverModel) (serverModel, string, diag.Diagnostics) {
+//
+// mode hostnameStatePreferLive (Read): write live hostname into state so InvAPI
+// drift surfaces on the next plan.
+// mode hostnameStateKeepPlanned (Create/Update apply): keep template.Hostname so
+// the apply result matches the plan (writing live≠plan caused inconsistent-result loops).
+func (r *serverResource) readServerState(ctx context.Context, serverID int, template serverModel, mode hostnameStateMode) (serverModel, string, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	show, err := r.client.EQShow(ctx, serverID)
@@ -1206,23 +1230,35 @@ func (r *serverResource) readServerState(ctx context.Context, serverID int, temp
 	state.MainIPv4 = types.StringValue(invapi.MainIPv4(show))
 	live := invapi.ShowHostname(show)
 	want := strings.TrimSpace(template.Hostname.ValueString())
-	// Prefer the live hostname from eq/show when available so InvAPI drift
-	// (order_instance intermittently skipping hostname) is visible in state.
-	if live != "" {
-		if !template.Hostname.IsNull() && !template.Hostname.IsUnknown() && want != "" && !strings.EqualFold(want, strings.TrimSpace(live)) {
+	switch mode {
+	case hostnameStatePreferLive:
+		// Prefer the live hostname from eq/show when available so InvAPI drift
+		// (order_instance intermittently skipping hostname) is visible in state.
+		if live != "" {
+			if !template.Hostname.IsNull() && !template.Hostname.IsUnknown() && want != "" && !hostnameMatches(want, live) {
+				diags.AddWarning(
+					"Live hostname does not match requested hostname",
+					fmt.Sprintf("hostname %q was requested, but InvAPI eq/show reports the live server hostname as %q. This has been observed to happen intermittently on Hostkey's side even with an unchanged config. Terraform is recording the live value in state to avoid masking this drift; the next apply will attempt eq/rename_server to fix it, or update hostname in config to %q to accept it.", want, live, live),
+				)
+			}
+			state.Hostname = types.StringValue(live)
+		} else if !template.Hostname.IsNull() && !template.Hostname.IsUnknown() && want != "" {
+			// Do not treat "no hostname in eq/show" as confirmation of config —
+			// that previously masked failed applies and skipped Create self-heal.
 			diags.AddWarning(
-				"Live hostname does not match requested hostname",
-				fmt.Sprintf("hostname %q was requested, but InvAPI eq/show reports the live server hostname as %q. This has been observed to happen intermittently on Hostkey's side even with an unchanged config. Terraform is recording the live value in state to avoid masking this drift; the next apply will attempt eq/rename_server to fix it, or update hostname in config to %q to accept it.", want, live, live),
+				"Live hostname could not be determined",
+				fmt.Sprintf("hostname %q is set in configuration/state, but eq/show did not expose a hostname in server_data or tags. Terraform is keeping the configured value; InvAPI metadata may still be updating, or only the guest OS hostname differs (InvAPI cannot report the OS hostname). Verify with hostname or hostnamectl on the server.", want),
 			)
 		}
-		state.Hostname = types.StringValue(live)
-	} else if !template.Hostname.IsNull() && !template.Hostname.IsUnknown() && want != "" {
-		// Do not treat "no hostname in eq/show" as confirmation of config —
-		// that previously masked failed applies and skipped Create self-heal.
-		diags.AddWarning(
-			"Live hostname could not be determined",
-			fmt.Sprintf("hostname %q is set in configuration/state, but eq/show did not expose a hostname in server_data or tags. Terraform is keeping the configured value; InvAPI metadata may still be updating, or only the guest OS hostname differs (InvAPI cannot report the OS hostname). Verify with hostname or hostnamectl on the server.", want),
-		)
+	case hostnameStateKeepPlanned:
+		// Apply path: leave template.Hostname unchanged. Empty live still warns
+		// so operators know eq/show did not confirm the planned value.
+		if live == "" && !template.Hostname.IsNull() && !template.Hostname.IsUnknown() && want != "" {
+			diags.AddWarning(
+				"Live hostname could not be determined",
+				fmt.Sprintf("hostname %q is set in configuration/state, but eq/show did not expose a hostname in server_data or tags. Terraform is keeping the configured value; InvAPI metadata may still be updating, or only the guest OS hostname differs (InvAPI cannot report the OS hostname). Verify with hostname or hostnamectl on the server.", want),
+			)
+		}
 	}
 	if st := serverStatus(show); st != "" {
 		state.Status = types.StringValue(st)
@@ -1248,6 +1284,67 @@ func (r *serverResource) readServerState(ctx context.Context, serverID int, temp
 	}
 
 	return state, live, diags
+}
+
+func hostnameMatches(want, live string) bool {
+	return strings.EqualFold(strings.TrimSpace(want), strings.TrimSpace(live))
+}
+
+func (r *serverResource) showHostnameNow(ctx context.Context, serverID int) (string, error) {
+	show, err := r.client.EQShow(ctx, serverID)
+	if err != nil {
+		return "", err
+	}
+	return invapi.ShowHostname(show), nil
+}
+
+// ensureInvAPIHostname calls eq/rename_server, optionally tags/add for the
+// hostname tag (what ShowHostname usually reads), and polls briefly until
+// eq/show matches want. Returns an error if InvAPI still reports a different value.
+func (r *serverResource) ensureInvAPIHostname(ctx context.Context, serverID int, want string) error {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return nil
+	}
+
+	if err := r.client.EQRenameServer(ctx, serverID, want); err != nil {
+		return err
+	}
+
+	if live, err := r.showHostnameNow(ctx, serverID); err == nil && hostnameMatches(want, live) {
+		return nil
+	}
+
+	// ShowHostname often comes from eq/show tags[]; rename_server may succeed
+	// without updating that tag. User tag sync skips "hostname" as protected —
+	// this internal write is intentional.
+	if err := r.client.TagsAdd(ctx, serverID, "hostname", want); err != nil {
+		tflog.Warn(ctx, "tags/add hostname after rename did not succeed", map[string]any{
+			"server_id": serverID,
+			"want":      want,
+			"err":       err.Error(),
+		})
+	} else if live, err := r.showHostnameNow(ctx, serverID); err == nil && hostnameMatches(want, live) {
+		return nil
+	}
+
+	var lastLive string
+	for attempt := 0; attempt < hostnameApplyPollAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(hostnameApplyPollInterval):
+		}
+		live, err := r.showHostnameNow(ctx, serverID)
+		if err != nil {
+			return fmt.Errorf("eq/show after rename: %w", err)
+		}
+		lastLive = live
+		if hostnameMatches(want, live) {
+			return nil
+		}
+	}
+	return fmt.Errorf("eq/rename_server (and tags/add hostname) accepted %q, but eq/show still reports %q", want, liveHostnameOrNone(lastLive))
 }
 
 // shouldSelfHealHostname reports whether Create should call eq/rename_server.

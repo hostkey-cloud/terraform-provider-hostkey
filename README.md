@@ -201,7 +201,7 @@ terraform destroy
 * У dedicated часто **два плана с одним `name` и разной `price`** — используйте подсказку из панели (`- FREE`, `(10000 P)`) или `traffic_plan_id`.
 * **`disk_mirror`** — только если в `presets/list` у пресета **2+ диска**; на однодисковых (в т.ч. `bm.v2-promo`) поле **не задавать**.
 * Поля заказа только типизированные атрибуты (`extra_order_params` удалён).
-* **`hostname`** в state берётся из InvAPI `eq/show` (обычно тег `hostname`), а не из guest OS — тег может совпадать с конфигом, пока на сервере `hostname`/`hostnamectl` ещё показывает имя вроде пресета; Create предупреждает проверить на машине.
+* **`hostname`** в state берётся из InvAPI `eq/show` (обычно тег `hostname`), а не из guest OS — тег может совпадать с конфигом, пока на сервере `hostname`/`hostnamectl` ещё показывает имя вроде пресета; Create предупреждает проверить на машине. После import смена `hostname` в HCL повторяет `eq/rename_server` (и при необходимости `tags/add`); если InvAPI не обновляет `eq/show`, apply завершается ошибкой без записи чужого hostname в state — оставьте нужное имя в HCL и исправьте в панели или повторите apply.
 * BM / GPU / vGPU, RAID, IPv6, reinstall — [docs/resources/server.md](docs/resources/server.md).
 
 Локальная сборка без Registry: `go install` + [dev_overrides](examples/dev-terraform.rc) — [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -216,7 +216,7 @@ Import по числовому id InvAPI — подробнее в [Registry: ho
 
 ## Устранение неполадок
 
-См. [Registry: Troubleshooting](https://registry.terraform.io/providers/hostkey-cloud/hostkey/latest/docs#troubleshooting).
+Пустой аккаунт (`NO_APPROPRIATE_SERVERS`): InvAPI не выдаёт сессию при **нуле серверов** — Terraform тоже не сможет заказать первый. Закажите первый сервер в панели, затем используйте провайдер. Остальное: [Registry: Troubleshooting](https://registry.terraform.io/providers/hostkey-cloud/hostkey/latest/docs#troubleshooting).
 
 ## Разработка
 
