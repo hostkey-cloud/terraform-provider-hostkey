@@ -50,14 +50,14 @@ func (r *serverResource) verifyOrderCatalog(ctx context.Context, plan *serverMod
 	}
 
 	if presetID > 0 && !catalogHasID(presetIDs, presetID) {
-		return fmt.Errorf("preset_id %d is not in presets/list for location %s", presetID, location)
+		return fmt.Errorf("%s", enhancePresetIDNotFound(ctx, r.client, location, presetID))
 	}
 
 	if !plan.PresetName.IsNull() && !plan.PresetName.IsUnknown() && strings.TrimSpace(plan.PresetName.ValueString()) != "" {
 		want := strings.TrimSpace(plan.PresetName.ValueString())
 		resolved, err := matchNamedID(want, presetsToNamed(list.Presets))
 		if err != nil {
-			return fmt.Errorf("preset_name: %w", err)
+			return fmt.Errorf("preset_name: %w", enhancePresetNameNotFound(ctx, r.client, location, want, err))
 		}
 		if presetID > 0 && resolved != presetID {
 			return fmt.Errorf("preset_name %q is catalog id %d, but preset_id is %d", want, resolved, presetID)
@@ -136,6 +136,28 @@ func verifyPresetActive(p invapi.Preset, all []invapi.Preset, location string) e
 		return fmt.Errorf("preset %q (id %d) is inactive in location %s", p.Name, p.ID, location)
 	}
 	return nil
+}
+
+func enhancePresetIDNotFound(ctx context.Context, client *invapi.Client, location string, presetID int) string {
+	base := fmt.Sprintf("preset_id %d is not in presets/list for location %s", presetID, location)
+	if client == nil || presetID <= 0 {
+		return base
+	}
+	global, err := client.PresetsList(ctx, invapi.PresetsListFilter{})
+	if err != nil {
+		return base
+	}
+	for _, p := range global.Presets {
+		if p.ID != presetID {
+			continue
+		}
+		locs := strings.TrimSpace(p.Locations)
+		if locs == "" {
+			return base
+		}
+		return fmt.Sprintf("%s (catalog lists %q for %s — set location_name to one of those)", base, p.Name, locs)
+	}
+	return base
 }
 
 func presetsUseActiveFlag(presets []invapi.Preset) bool {

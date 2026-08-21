@@ -66,7 +66,53 @@ func resolvePresetID(ctx context.Context, client *invapi.Client, location, name 
 	for _, p := range list.Presets {
 		items = append(items, namedID{ID: p.ID, Name: p.Name})
 	}
-	return matchNamedID(name, items)
+	id, err := matchNamedID(name, items)
+	if err != nil {
+		return 0, enhancePresetNameNotFound(ctx, client, location, name, err)
+	}
+	return id, nil
+}
+
+// enhancePresetNameNotFound adds a location hint when the name exists in the
+// unfiltered presets/list but not for the configured location_name. Browser
+// checks of presets.php without ?location= often cause this confusion.
+func enhancePresetNameNotFound(ctx context.Context, client *invapi.Client, location, name string, err error) error {
+	if client == nil || strings.TrimSpace(location) == "" || !strings.Contains(err.Error(), "not found") {
+		return err
+	}
+	global, gerr := client.PresetsList(ctx, invapi.PresetsListFilter{})
+	if gerr != nil {
+		return err
+	}
+	locs := presetCatalogLocations(global.Presets, name)
+	if locs == "" {
+		return err
+	}
+	return fmt.Errorf("%v in location %s (catalog lists it for %s — set location_name to one of those)", err, location, locs)
+}
+
+func presetCatalogLocations(presets []invapi.Preset, name string) string {
+	want := strings.TrimSpace(name)
+	seen := make(map[string]struct{})
+	var order []string
+	for _, p := range presets {
+		if !strings.EqualFold(strings.TrimSpace(p.Name), want) {
+			continue
+		}
+		for _, loc := range strings.Split(p.Locations, ",") {
+			loc = strings.TrimSpace(loc)
+			if loc == "" {
+				continue
+			}
+			key := strings.ToUpper(loc)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			order = append(order, loc)
+		}
+	}
+	return strings.Join(order, ",")
 }
 
 func resolveOSID(ctx context.Context, client *invapi.Client, location string, presetID int, name string) (int, error) {

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+### Changed
+
+## [0.1.9] - 2026-08-21
+
+### Fixed
+
+- `hostkey_server`: when a Paid pending deploy is **cancelled or fails** in the panel / InvAPI (callback `result=Error` / failed/cancelled, scope/context error tokens, or async callback key purged), Create/Update/Read stop waiting immediately with Warning **«Deploy cancelled or failed»** instead of polling until create-timeout and saying «Deploy still in progress». State stays `pending:<invoice>` (destroy drops tracking only; no re-order). The terminal reason is stored in private state so the next apply fail-fasts with the same Warning.
+
+- `hostkey_server`: when `preset_name` / `preset_id` is missing from `presets/list` for the configured `location_name`, the error now hints the catalog `locations` string if the preset exists globally (e.g. `bm.v1-str-8t` is NL,FI-only — unfiltered `presets.php` still lists it). Preset `description` (hardware) remains unrelated to `traffic_plan_name`.
+
+- `hostkey_server`: hostname Create self-heal no longer treats a missing `eq/show` hostname as a match against config (empty `ShowHostname` previously left the planned value in state and skipped `eq/rename_server`). Read warns when live hostname cannot be determined. Create/Update emit a **Verify guest OS hostname** warning: InvAPI only exposes hostname via `eq/show` tags/`server_data`, not the guest OS — tags can say `web-01` while the OS still shows a preset-like name (`vm-v2-pico`). When InvAPI live hostname ≠ config, Read still records the live value so the next plan shows a change.
+
+- `hostkey_server`: Create warns when InvAPI `eq/show` hostname is still empty or an IP at link time — Hostkey readiness emails often put that value (or the main IPv4) in the Hostname field, and `eq/rename_server` self-heal cannot rewrite an email already sent. `hostname` continues to be sent on `order_instance` (trimmed); docs note email vs InvAPI tags vs guest OS.
+
 ## [0.1.8] - 2026-08-21
 
 ### Fixed
@@ -14,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hostkey_server`: concurrent Creates in the same process can no longer all link to the same newcomer server id when `eq/show` hostname still lags. Pending resolution now uses a process-local claim registry (keyed by invoice) so only one waiter may adopt a given id; other waiters keep polling for a different newcomer or hostname/callback match. Serial single-newcomer linking is unchanged.
 - InvAPI: `ShowHostname` / pending correlation also read hostname from `eq/show` top-level `tags[]` (`tag=hostname` or `server_name`) — InvAPI often omits hostname from `server_data`, which previously broke hostname match and rename self-heal.
 - `hostkey_server`: when Create has a requested/default hostname, pending link no longer claims the first single newcomer with empty/mismatched hostname; it waits for a tags/`server_data` hostname match. Blind single-newcomer accept remains only when `wantHostname` is empty (avoids FI↔RU cross-link under parallel apply).
+- `hostkey_server`: a sole unclaimed newcomer whose live hostname is still InvAPI’s default `hostkey{id}` is treated as “hostname not applied yet” and may be claimed when `wantHostname` is set; Create then self-heals via `eq/rename_server`. Empty live hostname still waits (parallel safety).
 
 
 ## [0.1.7] - 2026-08-20

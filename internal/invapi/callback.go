@@ -164,16 +164,52 @@ func callbackTerminal(check *CallbackCheckResponse) (bool, error) {
 				return true, nil
 			}
 		}
-
-		ctxStr := strings.ToLower(string(check.Context))
-		if strings.Contains(ctxStr, "error") {
-			return true, fmt.Errorf("deploy failed: %s", string(check.Context))
-		}
 	}
 
-	if strings.EqualFold(check.Result, "Error") {
-		return true, fmt.Errorf("callback error: scope=%s debug=%s", check.Scope, check.Debug)
+	result := strings.ToLower(strings.TrimSpace(check.Result))
+	switch result {
+	case "error", "failed", "cancelled", "canceled", "fail":
+		return true, pendingTerminal(
+			fmt.Sprintf("callback error: result=%s scope=%s debug=%s", check.Result, check.Scope, check.Debug),
+			nil,
+		)
+	}
+
+	blob := strings.ToLower(string(check.Scope) + " " + string(check.Context) + " " + check.Debug)
+	if reason := terminalFailReason(blob); reason != "" {
+		detail := strings.TrimSpace(string(check.Context))
+		if detail == "" || detail == "null" {
+			detail = strings.TrimSpace(string(check.Scope))
+		}
+		if detail == "" || detail == "null" {
+			detail = strings.TrimSpace(check.Debug)
+		}
+		if detail == "" {
+			detail = reason
+		}
+		return true, pendingTerminal(fmt.Sprintf("deploy failed (%s): %s", reason, detail), nil)
 	}
 
 	return false, nil
+}
+
+// terminalFailReason returns a short token when InvAPI scope/context/debug
+// clearly indicates a cancelled or failed deploy. Success markers are checked
+// first in callbackTerminal so "deploy_done" never reaches here.
+func terminalFailReason(blob string) string {
+	blob = strings.ToLower(blob)
+	switch {
+	case strings.Contains(blob, "cancelled"), strings.Contains(blob, "canceled"):
+		return "cancelled"
+	case strings.Contains(blob, "cancel_request"), strings.Contains(blob, `"status":"cancel"`):
+		return "cancelled"
+	case strings.Contains(blob, "aborted"), strings.Contains(blob, "rejected"):
+		return "failed"
+	case strings.Contains(blob, "failure"), strings.Contains(blob, "failed"):
+		return "failed"
+	case strings.Contains(blob, "error"):
+		return "error"
+	default:
+		return ""
+	}
 }

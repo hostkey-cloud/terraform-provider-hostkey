@@ -1,8 +1,12 @@
 package provider
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
@@ -120,3 +124,62 @@ func TestPendingCreateStateNormalizesUnknownPowerState(t *testing.T) {
 		t.Fatalf("expected power_state null, got %#v", pending.PowerState)
 	}
 }
+
+func TestPendingDeployWarningTitleDetail_TerminalVsTimeout(t *testing.T) {
+	title, detail := pendingDeployWarningTitleDetail(
+		&invapi.PendingTerminalError{Message: "deploy cancelled or failed: async callback key no longer exists"},
+		603548, "cb-x", "pending:603548",
+	)
+	if title != "Deploy cancelled or failed" {
+		t.Fatalf("title=%q", title)
+	}
+	if !strings.Contains(detail, "will not wait the full create timeout") {
+		t.Fatalf("detail=%q", detail)
+	}
+
+	title, detail = pendingDeployWarningTitleDetail(
+		errors.New("timed out waiting for invoice 603548 after 1s"),
+		603548, "cb-x", "pending:603548",
+	)
+	if title != "Deploy still in progress" {
+		t.Fatalf("title=%q", title)
+	}
+	if !strings.Contains(detail, "Re-run apply to wait") {
+		t.Fatalf("detail=%q", detail)
+	}
+}
+
+type memPrivate map[string][]byte
+
+func (m memPrivate) SetKey(_ context.Context, key string, value []byte) diag.Diagnostics {
+	if m == nil {
+		return nil
+	}
+	m[key] = append([]byte(nil), value...)
+	return nil
+}
+
+func (m memPrivate) GetKey(_ context.Context, key string) ([]byte, diag.Diagnostics) {
+	if m == nil {
+		return nil, nil
+	}
+	return append([]byte(nil), m[key]...), nil
+}
+
+func TestPrivateTerminalErrorRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	priv := memPrivate{}
+	if err := setPrivateTerminalError(ctx, priv, "deploy cancelled or failed: x"); err != nil {
+		t.Fatal(err)
+	}
+	if got := getPrivateTerminalError(ctx, priv); got != "deploy cancelled or failed: x" {
+		t.Fatalf("got %q", got)
+	}
+	if err := setPrivateTerminalError(ctx, priv, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := getPrivateTerminalError(ctx, priv); got != "" {
+		t.Fatalf("cleared got %q", got)
+	}
+}
+

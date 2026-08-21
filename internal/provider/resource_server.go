@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -205,7 +206,7 @@ func (r *serverResource) Schema(ctx context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"hostname": schema.StringAttribute{
-				Description: "Server hostname. If omitted, the provider generates a unique default (tf-<random>) at create time so concurrent hostkey_server creates in the same apply can be told apart by hostname; InvAPI's own default hostname is not known until after the order resolves.",
+				Description: "Server hostname. If omitted, the provider generates a unique default (tf-<random>) at create time so concurrent hostkey_server creates in the same apply can be told apart by hostname; InvAPI's own default hostname is not known until after the order resolves. Terraform tracks the InvAPI eq/show value (usually the hostname tag), not the guest OS hostname. Hostkey readiness emails use InvAPI metadata at notify time and may show the main IPv4 if hostname was not applied yet.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -624,6 +625,7 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 	tflog.Info(ctx, "Ordering Hostkey server", map[string]any{
 		"preset_id": orderReq.Preset,
 		"location":  orderReq.LocationName,
+		"hostname":  orderReq.Hostname,
 	})
 
 	orderResp, err := r.client.EQOrderInstance(ctx, orderReq)
@@ -706,11 +708,17 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 			}
 		}
 		if waitErr != nil {
-			resp.Diagnostics.AddWarning(
-				"Deploy still in progress",
-				fmt.Sprintf("%v; callback=%q invoice=%d. State kept as pending:<invoice>. Re-run apply to wait for this invoice (will not place a new order).", waitErr, cb, orderResp.Invoice),
-			)
+			if invapi.IsPendingTerminal(waitErr) {
+				if err := setPrivateTerminalError(ctx, resp.Private, waitErr.Error()); err != nil {
+					resp.Diagnostics.AddWarning("private state", err.Error())
+				}
+			}
+			title, detail := pendingDeployWarningTitleDetail(waitErr, orderResp.Invoice, cb, pendingID(orderResp.Invoice))
+			resp.Diagnostics.AddWarning(title, detail)
 			return
+		}
+		if err := setPrivateTerminalError(ctx, resp.Private, ""); err != nil {
+			resp.Diagnostics.AddWarning("private state", err.Error())
 		}
 		if err := acceptNewServerID(found, known); err != nil {
 			invapi.ReleasePendingServerClaim(found, claimOwner)
@@ -720,39 +728,65 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 		serverID = found
 	}
 
-	state, d := r.readServerState(ctx, serverID, plan)
+	state, liveHostname, d := r.readServerState(ctx, serverID, plan)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	// eq/order_instance has been observed to intermittently not apply hostname
-	// even though the request included it. Detect mismatch and self-heal via
-	// eq/rename_server instead of silently persisting a wrong hostname in state.
-	if want := strings.TrimSpace(plan.Hostname.ValueString()); !plan.Hostname.IsNull() && want != "" &&
-		!strings.EqualFold(want, strings.TrimSpace(state.Hostname.ValueString())) {
+	// even though the request included it. Detect mismatch (or missing live
+	// hostname in eq/show) and self-heal via eq/rename_server. Comparing only
+	// state.Hostname is wrong when ShowHostname is empty: readServerState keeps
+	// the planned hostname, which falsely looks like a match.
+	wantHostname := strings.TrimSpace(plan.Hostname.ValueString())
+	// Readiness email is composed by Hostkey when deploy finishes — typically
+	// before this Create path can eq/rename_server. If InvAPI never applied
+	// order_instance hostname (empty or IP-like live value), the email Hostname
+	// field often falls back to main IPv4 even though Terraform requested a name.
+	if !plan.Hostname.IsNull() && wantHostname != "" && hostnameLooksUnsetOrIP(liveHostname) {
+		resp.Diagnostics.AddWarning(
+			"InvAPI hostname may not have been set before readiness email",
+			fmt.Sprintf("Requested hostname %q, but eq/show reported %q when Create linked the server. Hostkey's readiness email Hostname field is filled at notify time from InvAPI metadata; if hostname was missing then, the email often shows the main IPv4 instead. Terraform still sends hostname on order_instance and will attempt eq/rename_server when needed — that fixes InvAPI tags after the fact, not an email already sent. Guest OS hostname is a separate channel (see Verify guest OS hostname).", wantHostname, liveHostnameOrNone(liveHostname)),
+		)
+	}
+	if !plan.Hostname.IsNull() && shouldSelfHealHostname(wantHostname, liveHostname) {
 		tflog.Warn(ctx, "hostname not applied by order_instance; attempting eq/rename_server", map[string]any{
 			"server_id": serverID,
-			"want":      want,
-			"got":       state.Hostname.ValueString(),
+			"want":      wantHostname,
+			"got":       liveHostname,
 		})
-		if err := r.client.EQRenameServer(ctx, serverID, want); err != nil {
+		if err := r.client.EQRenameServer(ctx, serverID, wantHostname); err != nil {
+			got := liveHostname
+			if got == "" {
+				got = "(none in eq/show)"
+			}
 			resp.Diagnostics.AddWarning(
 				"Hostname was not applied by order_instance and automatic fix-up failed",
-				fmt.Sprintf("InvAPI reported hostname %q instead of the requested %q, and the automatic eq/rename_server fix-up failed: %v. The server was created successfully; only the hostname metadata is affected. Fix it manually in the panel or re-apply.", state.Hostname.ValueString(), want, err),
+				fmt.Sprintf("InvAPI reported hostname %q instead of the requested %q, and the automatic eq/rename_server fix-up failed: %v. The server was created successfully; only the hostname metadata is affected. Fix it manually in the panel or re-apply.", got, wantHostname, err),
 			)
-		} else if refreshed, rd := r.readServerState(ctx, serverID, plan); !rd.HasError() {
+		} else if refreshed, _, rd := r.readServerState(ctx, serverID, plan); !rd.HasError() {
 			resp.Diagnostics.Append(rd...)
 			state.Hostname = refreshed.Hostname
-			if !strings.EqualFold(strings.TrimSpace(state.Hostname.ValueString()), want) {
+			if !strings.EqualFold(strings.TrimSpace(state.Hostname.ValueString()), wantHostname) {
 				resp.Diagnostics.AddWarning(
 					"Hostname still does not match after automatic fix-up",
-					fmt.Sprintf("Requested hostname %q; InvAPI now reports %q after eq/rename_server. Verify manually in the panel.", want, state.Hostname.ValueString()),
+					fmt.Sprintf("Requested hostname %q; InvAPI now reports %q after eq/rename_server. Verify manually in the panel.", wantHostname, state.Hostname.ValueString()),
 				)
 			}
 		} else {
 			resp.Diagnostics.Append(rd...)
 		}
+	}
+
+	// InvAPI tracks hostname in eq/show tags (and occasionally server_data), not
+	// the guest OS. Tags can match the requested name while the OS still shows a
+	// preset-like name (e.g. vm-v2-pico). Mirror the ssh_key verify warning.
+	if !plan.Hostname.IsNull() && wantHostname != "" {
+		resp.Diagnostics.AddWarning(
+			"Verify guest OS hostname",
+			"hostname was sent to InvAPI (order_instance / eq/rename_server) and Terraform tracks the InvAPI value from eq/show (usually the hostname tag). InvAPI does not expose the guest OS hostname; the OS may still show a preset-like name even when InvAPI tags match. Check with hostname or hostnamectl on the server. If wrong, rename in the panel or set reinstall_trigger.",
+		)
 	}
 
 	// ssh_key cannot be verified via any InvAPI field; it has been observed to
@@ -775,7 +809,7 @@ func (r *serverResource) Create(ctx context.Context, req resource.CreateRequest,
 	if err := r.applyPowerState(ctx, serverID, plan, state); err != nil {
 		resp.Diagnostics.AddWarning("Power state", err.Error())
 	} else if powerStateConfigured(plan) {
-		refreshed, rd := r.readServerState(ctx, serverID, plan)
+		refreshed, _, rd := r.readServerState(ctx, serverID, plan)
 		resp.Diagnostics.Append(rd...)
 		if !resp.Diagnostics.HasError() {
 			state.PowerState = refreshed.PowerState
@@ -794,6 +828,15 @@ func (r *serverResource) Read(ctx context.Context, req resource.ReadRequest, res
 
 	id := state.ID.ValueString()
 	if strings.HasPrefix(id, pendingIDPrefix) {
+		if termMsg := getPrivateTerminalError(ctx, req.Private); termMsg != "" {
+			title, detail := pendingDeployWarningTitleDetail(
+				&invapi.PendingTerminalError{Message: termMsg},
+				0, getPrivateCallback(ctx, req.Private), id,
+			)
+			resp.Diagnostics.AddWarning(title, detail)
+			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+			return
+		}
 		resolved, cb, err := r.lookupThisPending(ctx, req.Private, state)
 		if cb != "" {
 			if setErr := setPrivateCallback(ctx, resp.Private, cb); setErr != nil {
@@ -801,15 +844,26 @@ func (r *serverResource) Read(ctx context.Context, req resource.ReadRequest, res
 			}
 		}
 		if err != nil {
-			tflog.Info(ctx, "pending server not ready yet", map[string]any{"id": id, "err": err.Error()})
-			resp.Diagnostics.AddWarning(
-				"Server deploy still in progress",
-				fmt.Sprintf("%s. Apply will wait for this invoice (no new order). Live status is in the Hostkey panel until the server id is linked.", err.Error()),
-			)
+			if invapi.IsPendingTerminal(err) {
+				if setErr := setPrivateTerminalError(ctx, resp.Private, err.Error()); setErr != nil {
+					resp.Diagnostics.AddWarning("private state", setErr.Error())
+				}
+				title, detail := pendingDeployWarningTitleDetail(err, 0, cb, id)
+				resp.Diagnostics.AddWarning(title, detail)
+			} else {
+				tflog.Info(ctx, "pending server not ready yet", map[string]any{"id": id, "err": err.Error()})
+				resp.Diagnostics.AddWarning(
+					"Server deploy still in progress",
+					fmt.Sprintf("%s. Apply will wait for this invoice (no new order). Live status is in the Hostkey panel until the server id is linked.", err.Error()),
+				)
+			}
 			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 			return
 		}
-		newState, d := r.readServerState(ctx, resolved, state)
+		if setErr := setPrivateTerminalError(ctx, resp.Private, ""); setErr != nil {
+			resp.Diagnostics.AddWarning("private state", setErr.Error())
+		}
+		newState, _, d := r.readServerState(ctx, resolved, state)
 		resp.Diagnostics.Append(d...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -837,7 +891,7 @@ func (r *serverResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	newState, d := r.readServerState(ctx, serverID, state)
+	newState, _, d := r.readServerState(ctx, serverID, state)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -888,6 +942,16 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 			resp.Diagnostics.AddError("Invalid pending id", state.ID.ValueString())
 			return
 		}
+		if termMsg := getPrivateTerminalError(ctx, req.Private); termMsg != "" {
+			keepPendingComputed(&plan, state)
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			title, detail := pendingDeployWarningTitleDetail(
+				&invapi.PendingTerminalError{Message: termMsg},
+				invoice, getPrivateCallback(ctx, req.Private), state.ID.ValueString(),
+			)
+			resp.Diagnostics.AddWarning(title, detail)
+			return
+		}
 		waitTimeout, diags := plan.Timeouts.Create(ctx, defaultCreateTimeout)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
@@ -914,12 +978,18 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 		if err != nil {
 			keepPendingComputed(&plan, state)
 			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			if invapi.IsPendingTerminal(err) {
+				if setErr := setPrivateTerminalError(ctx, resp.Private, err.Error()); setErr != nil {
+					resp.Diagnostics.AddWarning("private state", setErr.Error())
+				}
+			}
 			// Warning (not Error): keep apply non-tainted and resume-friendly, same as Create.
-			resp.Diagnostics.AddWarning(
-				"Deploy still in progress",
-				fmt.Sprintf("%v. State kept as %s - re-run apply to wait for this invoice (will not place a new order).", err, state.ID.ValueString()),
-			)
+			title, detail := pendingDeployWarningTitleDetail(err, invoice, cb, state.ID.ValueString())
+			resp.Diagnostics.AddWarning(title, detail)
 			return
+		}
+		if setErr := setPrivateTerminalError(ctx, resp.Private, ""); setErr != nil {
+			resp.Diagnostics.AddWarning("private state", setErr.Error())
 		}
 		state.ID = types.StringValue(strconv.Itoa(resolved))
 	}
@@ -987,6 +1057,10 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 			resp.Diagnostics.AddError("Rename failed", err.Error())
 			return
 		}
+		resp.Diagnostics.AddWarning(
+			"Verify guest OS hostname",
+			"hostname was updated via eq/rename_server and Terraform tracks the InvAPI value from eq/show (usually the hostname tag). InvAPI does not expose the guest OS hostname; confirm with hostname or hostnamectl on the server.",
+		)
 	}
 
 	if err := r.syncTags(ctx, serverID, plan.Tags, state.Tags); err != nil {
@@ -1012,7 +1086,7 @@ func (r *serverResource) Update(ctx context.Context, req resource.UpdateRequest,
 		})
 	}
 
-	newState, d := r.readServerState(ctx, serverID, plan)
+	newState, _, d := r.readServerState(ctx, serverID, plan)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -1115,22 +1189,26 @@ func (r *serverResource) ImportState(ctx context.Context, req resource.ImportSta
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-func (r *serverResource) readServerState(ctx context.Context, serverID int, template serverModel) (serverModel, diag.Diagnostics) {
+// readServerState refreshes computed fields from eq/show. liveHostname is the
+// raw ShowHostname result (empty means InvAPI did not expose a hostname in
+// server_data or tags — not "hostname equals config").
+func (r *serverResource) readServerState(ctx context.Context, serverID int, template serverModel) (serverModel, string, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	show, err := r.client.EQShow(ctx, serverID)
 	if err != nil {
 		diags.AddError("Read server failed", err.Error())
-		return template, diags
+		return template, "", diags
 	}
 
 	state := template
 	state.ID = types.StringValue(strconv.Itoa(serverID))
 	state.MainIPv4 = types.StringValue(invapi.MainIPv4(show))
+	live := invapi.ShowHostname(show)
+	want := strings.TrimSpace(template.Hostname.ValueString())
 	// Prefer the live hostname from eq/show when available so InvAPI drift
 	// (order_instance intermittently skipping hostname) is visible in state.
-	if live := invapi.ShowHostname(show); live != "" {
-		want := strings.TrimSpace(template.Hostname.ValueString())
+	if live != "" {
 		if !template.Hostname.IsNull() && !template.Hostname.IsUnknown() && want != "" && !strings.EqualFold(want, strings.TrimSpace(live)) {
 			diags.AddWarning(
 				"Live hostname does not match requested hostname",
@@ -1138,6 +1216,13 @@ func (r *serverResource) readServerState(ctx context.Context, serverID int, temp
 			)
 		}
 		state.Hostname = types.StringValue(live)
+	} else if !template.Hostname.IsNull() && !template.Hostname.IsUnknown() && want != "" {
+		// Do not treat "no hostname in eq/show" as confirmation of config —
+		// that previously masked failed applies and skipped Create self-heal.
+		diags.AddWarning(
+			"Live hostname could not be determined",
+			fmt.Sprintf("hostname %q is set in configuration/state, but eq/show did not expose a hostname in server_data or tags. Terraform is keeping the configured value; InvAPI metadata may still be updating, or only the guest OS hostname differs (InvAPI cannot report the OS hostname). Verify with hostname or hostnamectl on the server.", want),
+		)
 	}
 	if st := serverStatus(show); st != "" {
 		state.Status = types.StringValue(st)
@@ -1162,7 +1247,41 @@ func (r *serverResource) readServerState(ctx context.Context, serverID int, temp
 		}
 	}
 
-	return state, diags
+	return state, live, diags
+}
+
+// shouldSelfHealHostname reports whether Create should call eq/rename_server.
+// An empty live value means eq/show did not expose a hostname — treat that as
+// not applied (do not compare against the planned hostname left in state).
+func shouldSelfHealHostname(want, live string) bool {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return false
+	}
+	live = strings.TrimSpace(live)
+	if live == "" {
+		return true
+	}
+	return !strings.EqualFold(want, live)
+}
+
+// hostnameLooksUnsetOrIP is true when InvAPI has not published a real hostname
+// yet (empty) or published the main IPv4 as the hostname tag — both are common
+// when readiness email falls back to the IP.
+func hostnameLooksUnsetOrIP(live string) bool {
+	live = strings.TrimSpace(live)
+	if live == "" {
+		return true
+	}
+	return net.ParseIP(live) != nil
+}
+
+func liveHostnameOrNone(live string) string {
+	live = strings.TrimSpace(live)
+	if live == "" {
+		return "(none in eq/show)"
+	}
+	return live
 }
 
 // serverGone reports whether InvAPI no longer knows about serverID (safe to
@@ -1239,7 +1358,7 @@ func buildOrderRequest(plan serverModel) invapi.OrderInstanceRequest {
 		orderReq.TrafficPlan = int(plan.TrafficPlanID.ValueInt64())
 	}
 	if !plan.Hostname.IsNull() {
-		orderReq.Hostname = plan.Hostname.ValueString()
+		orderReq.Hostname = strings.TrimSpace(plan.Hostname.ValueString())
 	}
 	if !plan.SSHKey.IsNull() {
 		orderReq.SSHKey = plan.SSHKey.ValueString()

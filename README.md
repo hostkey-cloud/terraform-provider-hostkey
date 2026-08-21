@@ -201,6 +201,7 @@ terraform destroy
 * У dedicated часто **два плана с одним `name` и разной `price`** — используйте подсказку из панели (`- FREE`, `(10000 P)`) или `traffic_plan_id`.
 * **`disk_mirror`** — только если в `presets/list` у пресета **2+ диска**; на однодисковых (в т.ч. `bm.v2-promo`) поле **не задавать**.
 * Поля заказа только типизированные атрибуты (`extra_order_params` удалён).
+* **`hostname`** в state берётся из InvAPI `eq/show` (обычно тег `hostname`), а не из guest OS — тег может совпадать с конфигом, пока на сервере `hostname`/`hostnamectl` ещё показывает имя вроде пресета; Create предупреждает проверить на машине.
 * BM / GPU / vGPU, RAID, IPv6, reinstall — [docs/resources/server.md](docs/resources/server.md).
 
 Локальная сборка без Registry: `go install` + [dev_overrides](examples/dev-terraform.rc) — [CONTRIBUTING.md](CONTRIBUTING.md).

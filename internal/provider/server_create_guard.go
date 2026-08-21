@@ -17,6 +17,7 @@ const (
 	privateKnownKey             = "known_server_ids"
 	privateCallbackKey          = "order_callback"
 	privateReinstallCallbackKey = "reinstall_callback"
+	privateTerminalKey          = "order_terminal_error"
 )
 
 type privateData interface {
@@ -160,6 +161,64 @@ func getPrivateReinstallCallback(ctx context.Context, priv privateData) string {
 		return ""
 	}
 	return strings.TrimSpace(string(val))
+}
+
+func setPrivateTerminalError(ctx context.Context, priv privateData, msg string) error {
+	msg = strings.TrimSpace(msg)
+	if priv == nil {
+		return nil
+	}
+	if msg == "" {
+		diags := priv.SetKey(ctx, privateTerminalKey, []byte{})
+		if diags.HasError() {
+			return fmt.Errorf("clear private terminal error: %s", diags[0].Detail())
+		}
+		return nil
+	}
+	diags := priv.SetKey(ctx, privateTerminalKey, []byte(msg))
+	if diags.HasError() {
+		return fmt.Errorf("set private terminal error: %s", diags[0].Detail())
+	}
+	return nil
+}
+
+func getPrivateTerminalError(ctx context.Context, priv privateData) string {
+	if priv == nil {
+		return ""
+	}
+	val, diags := priv.GetKey(ctx, privateTerminalKey)
+	if diags.HasError() || len(val) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(string(val))
+}
+
+// pendingDeployWarningTitleDetail chooses Warning title/detail for a pending wait
+// outcome. Terminal cancel/fail uses a distinct title so operators do not mistake
+// it for a soft timeout; state stays pending:<invoice> either way.
+func pendingDeployWarningTitleDetail(err error, invoice int, callback, pendingID string) (title, detail string) {
+	cb := strings.TrimSpace(callback)
+	id := strings.TrimSpace(pendingID)
+	if id == "" && invoice > 0 {
+		id = fmt.Sprintf("%s%d", pendingIDPrefix, invoice)
+	}
+	if invapi.IsPendingTerminal(err) {
+		title = "Deploy cancelled or failed"
+		detail = fmt.Sprintf(
+			"%v. State kept as %s so terraform destroy can drop tracking (state-only; cancel the invoice in the Hostkey panel if it is still billed). Re-run apply will not place a new order and will not wait the full create timeout again.",
+			err, id,
+		)
+		if cb != "" {
+			detail = fmt.Sprintf("%s callback=%q.", detail, cb)
+		}
+		return title, detail
+	}
+	title = "Deploy still in progress"
+	detail = fmt.Sprintf(
+		"%v; callback=%q invoice=%d. State kept as %s. Re-run apply to wait for this invoice (will not place a new order).",
+		err, cb, invoice, id,
+	)
+	return title, detail
 }
 
 func pendingInvoiceFromState(state serverModel) (int, bool) {

@@ -430,6 +430,42 @@ func TestWaitForPendingServer_WantHostnameSkipsEmptySingleNewcomer(t *testing.T)
 	}
 }
 
+func TestWaitForPendingServer_SingleNewcomerLinksViaInvAPIDefaultHostname(t *testing.T) {
+	freshPendingClaims(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "update_servers":
+			_, _ = io.WriteString(w, `{"result":"OK","deploy_keys":{"603548":"cb-ours"},"servers":[10,20,101]}`)
+		case strings.Contains(r.URL.Path, "eq_callback.php"):
+			_, _ = io.WriteString(w, `{"result":"OK","scope":"pending","context":{"id":"","ip":""}}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "list":
+			_, _ = io.WriteString(w, `{"result":"OK","servers":[10,20,101]}`)
+		case strings.Contains(r.URL.Path, "eq.php") && r.Form.Get("action") == "show":
+			// InvAPI default before requested hostname is applied.
+			_, _ = io.WriteString(w, `{"result":"OK","server_data":{"status":"Active"},"tags":[{"tag":"hostname","value":"hostkey101"}]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{BaseURL: srv.URL + "/", HTTPClient: srv.Client(), MaxRetries: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := c.WaitForPendingServer(context.Background(), 603548, "", map[int]struct{}{10: {}, 20: {}}, "tf-pending-want-host", WaitOptions{
+		PollInterval: 10 * time.Millisecond,
+		Timeout:      2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("expected hostkey{id} placeholder to allow single-newcomer claim, got err=%v", err)
+	}
+	if id != 101 {
+		t.Fatalf("id=%d want 101", id)
+	}
+}
+
 func TestWaitForPendingServer_SingleNewcomerLinksViaTagsHostname(t *testing.T) {
 	freshPendingClaims(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

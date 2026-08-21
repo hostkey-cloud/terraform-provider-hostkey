@@ -196,6 +196,7 @@ Confirm with **`yes`**. Calls `whmcs/request_cancellation` using `cancellation_t
 * Dedicated catalogs often have **two rows with the same `name` and different `price`** — use a panel hint (`- FREE`, `(10000 P)`) or `traffic_plan_id`.
 * Set **`disk_mirror`** only when `presets/list` shows **2+ disks** for the preset; omit on single-disk presets (including `bm.v2-promo`).
 * Order fields are typed attributes only (`extra_order_params` was removed).
+* **`hostname`** is tracked from InvAPI `eq/show` (usually the `hostname` tag), not from the guest OS — tags can match while `hostname`/`hostnamectl` on the server still shows a preset-like name; Create warns to verify on the machine.
 * BM / GPU / vGPU, RAID, IPv6, reinstall — [docs/resources/server.md](docs/resources/server.md).
 
 Local build without the Registry: `go install` + [dev_overrides](examples/dev-terraform.rc) — [CONTRIBUTING.md](CONTRIBUTING.md).

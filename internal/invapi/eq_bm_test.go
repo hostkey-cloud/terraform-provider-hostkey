@@ -106,3 +106,46 @@ func TestEQOrderInstanceBareMetalParams(t *testing.T) {
 		t.Fatalf("preset: %q", captured.Get("preset"))
 	}
 }
+
+func TestEQOrderInstance_SendsHostnameWhenSet(t *testing.T) {
+	var captured url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		captured = r.PostForm
+		_, _ = io.WriteString(w, `{"result":"OK","action":"order_instance"}`)
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{BaseURL: srv.URL + "/"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = c.EQOrderInstance(context.Background(), OrderInstanceRequest{
+		Preset:       "vm.pico",
+		LocationName: "FI",
+		RootPass:     "Abcdef1%",
+		Hostname:     "web-01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := captured.Get("hostname"); got != "web-01" {
+		t.Fatalf("hostname wire param=%q, want web-01 (readiness email uses InvAPI hostname at notify time)", got)
+	}
+
+	captured = nil
+	_, err = c.EQOrderInstance(context.Background(), OrderInstanceRequest{
+		Preset:       "vm.pico",
+		LocationName: "FI",
+		RootPass:     "Abcdef1%",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, set := captured["hostname"]; set {
+		t.Fatalf("empty hostname must omit the param, got %q", captured.Get("hostname"))
+	}
+}

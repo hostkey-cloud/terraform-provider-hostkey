@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"github.com/hostkey-cloud/terraform-provider-hostkey/internal/invapi"
 )
 
 // Fixture only — exercises matchNamedID (exact / partial / ambiguous / missing).
@@ -39,6 +42,32 @@ func TestMatchNamedID(t *testing.T) {
 	_, err = matchNamedID("Windows", items)
 	if err == nil {
 		t.Fatal("expected not found")
+	}
+}
+
+func TestPresetCatalogLocations(t *testing.T) {
+	presets := []invapi.Preset{
+		{ID: 111, Name: "bm.v1-str-8t", Locations: "NL,FI"},
+		{ID: 1, Name: "vm.pico", Locations: "NL,RU,FI"},
+	}
+	got := presetCatalogLocations(presets, "bm.v1-str-8t")
+	if got != "NL,FI" {
+		t.Fatalf("locations=%q", got)
+	}
+	if presetCatalogLocations(presets, "missing") != "" {
+		t.Fatal("expected empty for unknown name")
+	}
+	// Case-insensitive name match; locations stay catalog order/casing.
+	if presetCatalogLocations(presets, "BM.V1-STR-8T") != "NL,FI" {
+		t.Fatal("expected case-insensitive name match")
+	}
+}
+
+func TestEnhancePresetNameNotFoundNilClient(t *testing.T) {
+	base := fmt.Errorf(`name "bm.v1-str-8t" not found (exact catalog match required)`)
+	got := enhancePresetNameNotFound(t.Context(), nil, "RU", "bm.v1-str-8t", base)
+	if got.Error() != base.Error() {
+		t.Fatalf("nil client must keep original error: %v", got)
 	}
 }
 

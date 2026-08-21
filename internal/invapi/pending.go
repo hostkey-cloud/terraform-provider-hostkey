@@ -5,22 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // ErrPendingNotReady means this invoice/callback has no server id yet.
 var ErrPendingNotReady = errors.New("pending deploy not ready")
-
-func isPendingTerminalErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "deploy failed") ||
-		strings.Contains(s, "callback error") ||
-		strings.Contains(s, "pre-existing server")
-}
 
 func rejectKnownID(id, invoice int, known map[int]struct{}) error {
 	if id <= 0 {
@@ -228,6 +219,20 @@ func showContainsHostname(show *ServerShowResponse, wantHostname string) bool {
 	return walk(sd)
 }
 
+// isInvAPIPlaceholderHostname reports whether live looks like InvAPI's default
+// name before order_instance applies the requested hostname (hostkey{id}).
+// Empty live is intentionally NOT treated as a placeholder here: with
+// wantHostname set, an empty single newcomer must keep waiting so parallel
+// Creates cannot cross-link the first unnamed server (claim registry alone
+// does not pick the correct waiter).
+func isInvAPIPlaceholderHostname(live string, id int) bool {
+	live = strings.TrimSpace(live)
+	if live == "" || id <= 0 {
+		return false
+	}
+	return strings.EqualFold(live, "hostkey"+strconv.Itoa(id))
+}
+
 func (c *Client) matchPendingIDs(ctx context.Context, known map[int]struct{}, ids []int, wantHostname, owner string) (int, error) {
 	newcomers := availableNewcomerIDs(known, ids, owner)
 	wantHostname = strings.TrimSpace(wantHostname)
@@ -240,6 +245,9 @@ func (c *Client) matchPendingIDs(ctx context.Context, known map[int]struct{}, id
 		// eq/show often lags. When wantHostname is set, require a match (including
 		// tags[]) before claiming so parallel Creates cannot cross-link the first
 		// empty-hostname newcomer; empty/mismatched → keep waiting.
+		// Exception: InvAPI often leaves the default hostkey{id} until rename;
+		// treat that as "hostname not applied yet", claim the sole newcomer, and
+		// let Create self-heal via eq/rename_server.
 		id := newcomers[0]
 		if wantHostname != "" {
 			show, err := c.EQShow(ctx, id)
@@ -247,7 +255,10 @@ func (c *Client) matchPendingIDs(ctx context.Context, known map[int]struct{}, id
 				return 0, ErrPendingNotReady
 			}
 			live := showHostname(show)
-			if live == "" || !strings.EqualFold(live, wantHostname) {
+			if live == "" {
+				return 0, ErrPendingNotReady
+			}
+			if !strings.EqualFold(live, wantHostname) && !isInvAPIPlaceholderHostname(live, id) {
 				return 0, ErrPendingNotReady
 			}
 		}
@@ -339,6 +350,21 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 		}
 		check, cbErr := c.CallbackCheck(ctx, callback)
 		if cbErr != nil {
+			// PostForm turns result=Error / AsyncKey-not-found into errors before
+			// callbackTerminal can parse the body. Recover definitive cancel/fail
+			// here, but try list/hostname correlation first in case deploy already
+			// finished and InvAPI cleaned up the callback.
+			termErr := terminalFromCallbackCheckErr(cbErr)
+			gone := isCallbackKeyGone(cbErr)
+			if termErr != nil || gone {
+				if sid, listErr := c.matchPendingListID(ctx, known, wantHostname, owner); listErr == nil && sid > 0 {
+					return sid, callback, nil
+				}
+				if gone {
+					return 0, callback, callbackGoneTerminal(callback, cbErr)
+				}
+				return 0, callback, termErr
+			}
 			return 0, callback, cbErr
 		}
 		if _, termErr := callbackTerminal(check); termErr != nil {
@@ -362,6 +388,10 @@ func (c *Client) LookupPendingServer(ctx context.Context, invoice int, callback 
 							// eq/list when update_servers cannot yet be correlated.
 							return 0, callback, ErrPendingNotReady
 						}
+						// deploy_keys / servers empty after we already have a callback:
+						// invoice may have been cancelled in the panel. Keep waiting
+						// unless callbackTerminal already fired; empty list alone is
+						// not definitive while the async key still exists.
 					}
 				}
 				sid, listErr := c.matchPendingListID(ctx, known, wantHostname, owner)
@@ -428,7 +458,7 @@ func (c *Client) WaitForPendingServer(ctx context.Context, invoice int, callback
 		}
 		if lookErr != nil && !errors.Is(lookErr, ErrPendingNotReady) {
 			lastErr = lookErr
-			if isPendingTerminalErr(lookErr) {
+			if IsPendingTerminal(lookErr) {
 				return 0, resolvedCallback, lookErr
 			}
 		} else {
