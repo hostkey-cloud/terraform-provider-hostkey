@@ -70,13 +70,6 @@ func PendingClaimOwner(invoice int, callback string) string {
 	return pendingClaimOwner(invoice, callback)
 }
 
-func claimOwnerOf(id int) (string, bool) {
-	pendingClaimMu.Lock()
-	defer pendingClaimMu.Unlock()
-	owner, ok := pendingClaims[id]
-	return owner, ok
-}
-
 // availableNewcomerIDs returns ids not in known and not claimed by another owner.
 // Ids already claimed by owner are included so the same waiter can re-link.
 func availableNewcomerIDs(known map[int]struct{}, ids []int, owner string) []int {

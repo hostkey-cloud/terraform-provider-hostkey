@@ -52,16 +52,6 @@ func uniqueNewListID(known map[int]struct{}, ids []int) (int, error) {
 	}
 }
 
-func newcomerIDs(known map[int]struct{}, ids []int) []int {
-	out := make([]int, 0, len(ids))
-	for _, id := range ids {
-		if _, ok := known[id]; !ok {
-			out = append(out, id)
-		}
-	}
-	return out
-}
-
 // ShowHostname is the exported form of showHostname for callers outside this
 // package (e.g. resource Read/Create) that need to compare the live server
 // hostname reported by eq/show against the hostname that was requested.
